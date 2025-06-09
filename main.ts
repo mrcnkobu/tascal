@@ -780,9 +780,15 @@ function formatDuration(minutes: number): string {
 
 function formatTime(time: string): string {
     // If time is already in HH:MM format, return as is
-    if (time.includes(':')) return time;
+    if (time.includes(':')) {
+        // Ensure hours are padded with leading zero
+        const [hours, minutes] = time.split(':');
+        return `${hours.padStart(2, '0')}:${minutes}`;
+    }
     // Otherwise, assume it's just hours and add :00
-    return `${time}:00`;
+    // Pad single-digit hours with leading zero
+    const hour = time.padStart(2, '0');
+    return `${hour}:00`;
 }
 
 async function appendRescheduledTask(globalPath: string, targetDate: string, originalDate: string, line: string) {
@@ -842,8 +848,8 @@ async function loadRescheduledTasks(
             continue;
         }
 
-        const matchRange = line.match(/^@(\d{4}-\d{2}-\d{2}) from (\d{4}-\d{2}-\d{2}): @(\d{1,2}:\d{2})[-–—](\d{1,2}:\d{2}) (.+)$/);
-        const matchDuration = line.match(/^@(\d{4}-\d{2}-\d{2}) from (\d{4}-\d{2}-\d{2}): @(\d{1,2}:\d{2})\s*\(([\dhm\s]+)\) (.+)$/);
+        const matchRange = line.match(/^@(\d{4}-\d{2}-\d{2}) from (\d{4}-\d{2}-\d{2}): @(\d{1,2}(?::\d{2})?)[-–—](\d{1,2}(?::\d{2})?) (.+)$/);
+        const matchDuration = line.match(/^@(\d{4}-\d{2}-\d{2}) from (\d{4}-\d{2}-\d{2}): @(\d{1,2}(?::\d{2})?)\s*\(([\dhm\s]+)\) (.+)$/);
 
         if (!matchRange && !matchDuration) {
             updatedLines.push(line);
@@ -857,8 +863,11 @@ async function loadRescheduledTasks(
                 continue;
             }
 
-            const summary = summaryRaw.replace(/\[[^\]]+\]/, "").trim();
-            blocks.push(`@${startStr}–${endStr} ${summary} (rescheduled from ${fromDate})`);
+            const summary = summaryRaw
+                .replace(/\[[^\]]+\]/, "") // Remove recurring markers
+                .replace(/@\d{4}-\d{2}-\d{2}/, "") // Remove @YYYY-MM-DD
+                .trim();
+            blocks.push(`@${startStr}–${endStr} ${summary} [rs:${fromDate}]`);
             updatedLines.push(`%%processed%% ${line}`);
             continue;
         }
@@ -870,8 +879,11 @@ async function loadRescheduledTasks(
                 continue;
             }
 
-            const summary = summaryRaw.replace(/\[[^\]]+\]/, "").trim();
-            blocks.push(`@${startStr} (${durationStr}) ${summary} (rescheduled from ${fromDate})`);
+            const summary = summaryRaw
+                .replace(/\[[^\]]+\]/, "") // Remove recurring markers
+                .replace(/@\d{4}-\d{2}-\d{2}/, "") // Remove @YYYY-MM-DD
+                .trim();
+            blocks.push(`@${startStr} (${durationStr}) ${summary} [rs:${fromDate}]`);
             updatedLines.push(`%%processed%% ${line}`);
             continue;
         }
@@ -921,7 +933,7 @@ async function loadRecurringTasks(recurringPath: string, date: DateTime): Promis
     const updatedLines: string[] = [];
 
     for (let line of lines) {
-        const repeatMatch = line.match(/%%repeat:([^%]+)%%/);
+        const repeatMatch = line.match(/\[(w|m):([^\]]+)\]/);
         const addedMatch = line.match(/<!-- added:(\d{4}-\d{2}-\d{2}) -->/g);
         const alreadyAdded = addedMatch?.some(m => m.includes(date.toISODate())) ?? false;
 
@@ -930,7 +942,7 @@ async function loadRecurringTasks(recurringPath: string, date: DateTime): Promis
             continue;
         }
 
-        const rule = repeatMatch[1].trim();
+        const [_, type, rule] = repeatMatch;
 
         if (alreadyAdded) {
             updatedLines.push(line);
@@ -939,26 +951,24 @@ async function loadRecurringTasks(recurringPath: string, date: DateTime): Promis
 
         let shouldAdd = false;
 
-        if (rule.startsWith("weekly:")) {
-            const daysStr = rule.match(/days=([A-Za-z,]+)/)?.[1] ?? "";
-            const days = daysStr.split(",").map(d => d.toLowerCase());
-            if (days.includes(date.toFormat("ccc").toLowerCase())) shouldAdd = true;
+        if (type === "w") {
+            const days = rule.split(",").map(d => d.trim());
+            if (days.includes(date.toFormat("ccc"))) shouldAdd = true;
         }
 
-        if (rule.startsWith("monthly:")) {
-            const dayStr = rule.match(/day=([\-]?\d+)/)?.[1];
-            if (dayStr) {
-                const day = parseInt(dayStr);
-                const lastDay = date.endOf("month").day;
-                const targetDay = day > 0 ? day : lastDay + 1 + day;
-                if (date.day === targetDay) shouldAdd = true;
-            }
+        if (type === "m") {
+            const day = parseInt(rule);
+            const lastDay = date.endOf("month").day;
+            const targetDay = day > 0 ? day : lastDay + 1 + day;
+            if (date.day === targetDay) shouldAdd = true;
         }
 
         if (shouldAdd) {
             // add to result
-            const taskLine = line.replace(/%%repeat:[^%]+%%\s*/, "").replace(/\s*<!--.*$/, "").trim();
-            result.push(taskLine);
+            const taskLine = line.replace(/\[[^\]]+\]/, "").replace(/\s*<!--.*$/, "").trim();
+            // Add source indicator based on type
+            const sourceIndicator = type === "w" ? "[rc:w]" : "[rc:m]";
+            result.push(`${taskLine} ${sourceIndicator}`);
 
             // append marker to the line
             line += ` <!-- added:${date.toISODate()} -->`;
