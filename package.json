@@ -6,7 +6,7 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "node esbuild.config.mjs production",
-		"deploy": "npm run build && cp main.js manifest.json styles.css \"$OBSIDIAN_VAULT/.obsidian/plugins/tascal/\""
+		"deploy": ". ./.env && npm run build && cp main.js manifest.json styles.css \"$OBSIDIAN_VAULT/.obsidian/plugins/tascal/\""
 	},
 	"keywords": ["obsidian", "calendar", "planner", "time-tracking"],
 	"author": "mkobu",

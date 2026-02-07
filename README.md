@@ -1,94 +1,177 @@
-# Obsidian Sample Plugin
+# Tascal
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+A calendar-driven daily planner and time tracker for [Obsidian](https://obsidian.md). Syncs ICS calendars, renders a visual timeline in your daily notes, and tracks how you spend your time.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## Features
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+### Calendar sync
 
-## First time developing plugins?
+Tascal fetches events from ICS calendar URLs (Google Calendar, Outlook, iCloud, etc.) and renders them as a timeline in your daily note. It handles recurring events with full RRULE expansion, including overrides and exceptions.
 
-Quick starting guide for new plugin devs:
+Each calendar gets a configurable short name that prefixes event summaries, e.g. `(work) Team standup`.
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+**Command:** `Tascal: Sync calendar`
 
-## Releasing new releases
+### Timeline
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+The timeline is rendered inside a `<!--tascal-->` section in your note. It shows all events as checkbox items with start/end times, free time gaps between them, and a stats line at the top:
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+```
+<!--tascal-->
+### Timeline
+**2/5** done | 2h/8h30m | **Total TT: 1h15m**
 
-## Adding your plugin to the community plugin list
+- *08:00-09:00 (free)*
+- [x] 09:00-10:00 (work) Team standup
+- [ ] 10:00-11:30 (work) Deep work block
+- *11:30-12:00 (free)*
+- [ ] 12:00-12:30 Lunch [rc:w]
+- [ ] 12:30-14:00 (work) Project review
+- [x] 14:00-15:00 Code review [rs:2026-02-05]
+- *15:00-22:00 (free)*
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+<!--manual
+@12:00 (30m) Lunch [w:Mon,Tue,Wed,Thu,Fri]
+-->
+<!--/tascal-->
 ```
 
-If you have multiple URLs, you can also do:
+The stats line shows: completed/total tasks, elapsed/total scheduled time, and total tracked time.
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+Checkbox state is preserved across timeline rebuilds -- checking off a task and then syncing again won't lose your progress.
+
+**Command:** `Tascal: Update timeline` -- rebuilds the timeline using cached calendar data, recurring events, and manual blocks.
+
+### Manual tasks
+
+Define your own tasks inside the `<!--manual ... -->` block using two formats:
+
+**Start-end format:**
+```
+@09:00-17:00 Deep work
+@14:00-15:30 Meeting with client
 ```
 
-## API Documentation
+**Start-duration format:**
+```
+@09:00 (1h) Morning review
+@14:00 (30m) Quick call
+@8 (2h) Reading
+```
 
-See https://github.com/obsidianmd/obsidian-api
+Hours can be written without minutes (`@8` = `@08:00`). Durations use `h` and `m` notation (`1h30m`, `2h`, `45m`).
+
+### Recurring events
+
+Define events that repeat on a schedule directly in Tascal settings:
+
+**Weekly recurrence** -- specify days of the week:
+```
+@09:00 (1h) Daily standup [w:Mon,Tue,Wed,Thu,Fri]
+@10:00 (30m) 1:1 with manager [w:Wed]
+```
+
+**Monthly recurrence** -- specify the day of the month:
+```
+@14:00 (1h) Monthly retrospective [m:1]
+@10:00 (2h) Budget review [m:15]
+```
+
+Recurring events are automatically added to the manual blocks when you sync or update the timeline. They're marked with `[rc:w]` or `[rc:m]` in the timeline so you can tell them apart. Each occurrence is tracked to prevent duplicates.
+
+### Rescheduling
+
+Append `@YYYY-MM-DD` to any manual task to move it to another date:
+
+```
+@14:00 (1h) Dentist appointment @2026-02-10
+```
+
+When the timeline is updated, this task is removed from today and saved to `.tascal/rescheduled.md`. On the target date, it appears automatically with a `[rs:YYYY-MM-DD]` marker showing where it came from.
+
+### Time tracking
+
+Track time spent on individual events with start/stop controls. Tracked time is stored inline as `{TT: HH:MM::HH:MM}` notation and persisted to `.tascal/tt-YYYY-MM-DD.json` files.
+
+**Starting tracking:**
+- Place `>` after the checkbox on a timeline item, then run the start command
+- Or run the command with no `>` marker to get a selection modal
+
+**Commands:**
+- `Tascal: Start time tracking` -- begins a tracking session for the marked event
+- `Tascal: Stop time tracking` -- ends the current session and records the duration
+- `Tascal: Save time tracking data` -- extracts `{TT:}` data from the timeline and saves it to the JSON file
+
+Multiple tracking sessions per event are supported. The total tracked time across all events is shown in the stats line.
+
+### Format tasks
+
+Sorts manual blocks by start time and normalizes their format: short tasks (<=90 min) use duration notation, longer ones use start-end notation.
+
+**Command:** `Tascal: Format tasks`
+
+### Working hours
+
+Configure your default day start and end times, plus per-day overrides. Free time slots are only shown within your configured working hours.
+
+Default: 08:00-22:00, with Saturday 10:00-18:00 and Sunday 10:00-20:00.
+
+## Settings
+
+| Setting | Description |
+|---|---|
+| Timezone | IANA timezone for all date/time operations (e.g. `Europe/Warsaw`) |
+| Calendars | List of ICS calendar URLs with short names |
+| Default Day Start/End | Working hours boundaries for the timeline |
+| Day Overrides | Per-day-of-week start/end overrides |
+| Recurring Events | Repeating task definitions with `[w:]` or `[m:]` patterns |
+
+## Data storage
+
+| Path | Contents |
+|---|---|
+| `.tascal/YYYY-MM-DD.json` | Cached calendar events for each synced date |
+| `.tascal/tt-YYYY-MM-DD.json` | Time tracking data per day |
+| `.tascal/rescheduled.md` | Rescheduled task entries |
+| `.tascal/recurring.md` | Markers tracking which recurring events have been added to which dates |
+
+## Installation
+
+### From release
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](../../releases/latest)
+2. Create a folder `your-vault/.obsidian/plugins/tascal/`
+3. Copy the three files into that folder
+4. Restart Obsidian and enable Tascal in Settings > Community Plugins
+
+### From source
+
+```bash
+git clone <repo-url>
+cd tascal
+npm install
+npm run build
+```
+
+Copy `main.js`, `manifest.json`, and `styles.css` to your vault's plugin directory, or configure `.env` and use `npm run deploy`:
+
+```bash
+cp .env.example .env
+# Edit .env to set OBSIDIAN_VAULT to your vault path
+npm run deploy
+```
+
+## Commands
+
+| Command | Description |
+|---|---|
+| Sync calendar | Fetch ICS calendars and rebuild the timeline |
+| Update timeline | Rebuild timeline from cache, recurring events, and manual blocks |
+| Format tasks | Sort and normalize manual block formatting |
+| Start time tracking | Begin tracking time for a selected event |
+| Stop time tracking | End the current tracking session |
+| Save time tracking data | Persist timeline tracking data to JSON |
+
+## License
+
+MIT
