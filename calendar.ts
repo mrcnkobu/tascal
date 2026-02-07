@@ -1,0 +1,151 @@
+import { App } from "obsidian";
+import ICAL from "ical.js";
+import { DateTime } from "luxon";
+import { EventData } from "./types";
+
+export function extractEventsForDate(
+    calendar: ICAL.Component,
+    localDate: DateTime,
+    timezone: string
+): EventData[] {
+    const startOfDay = localDate.startOf("day");
+    const endOfDay = localDate.endOf("day");
+
+    const vevents = calendar.getAllSubcomponents("vevent");
+    const events: EventData[] = [];
+
+    const overridesByUid: Record<string, ICAL.Event[]> = {};
+    const overriddenByUid: Record<string, Set<number>> = {};
+    const exdatesByUid: Record<string, Set<number>> = {};
+
+    // Step 1: separate overrides and build override maps
+    for (const comp of vevents) {
+	const event = new ICAL.Event(comp);
+
+	if (event.recurrenceId) {
+	    const uid = event.uid;
+	    if (!overridesByUid[uid]) overridesByUid[uid] = [];
+	    overridesByUid[uid].push(event);
+
+	    const originalDate = event.recurrenceId.toJSDate().getTime();
+	    if (!overriddenByUid[uid]) overriddenByUid[uid] = new Set();
+	    overriddenByUid[uid].add(originalDate);
+	}
+    }
+
+    // Step 2: collect EXDATEs per UID
+    for (const comp of vevents) {
+	const event = new ICAL.Event(comp);
+	const uid = event.uid;
+	const exs = comp.getAllProperties("exdate");
+	if (!exdatesByUid[uid]) exdatesByUid[uid] = new Set();
+
+	for (const ex of exs) {
+	    const values = ex.getValues();
+	    for (const dt of values) {
+		exdatesByUid[uid].add(new Date(dt).getTime());
+	    }
+	}
+    }
+
+    // Step 3: process master events and expand RRULEs
+    for (const comp of vevents) {
+	const event = new ICAL.Event(comp);
+	const uid = event.uid;
+
+	// skip overrides (already processed)
+	if (event.recurrenceId) continue;
+
+	const dtstart = event.startDate?.toJSDate();
+	const dtend = event.endDate?.toJSDate();
+	if (!dtstart || !dtend) continue;
+
+	if (event.isRecurring()) {
+	    const iterator = event.iterator();
+	    let next;
+	    while ((next = iterator.next())) {
+		const occJs = next.toJSDate();
+		const occ = DateTime.fromJSDate(occJs, { zone: timezone });
+
+		if (occ > endOfDay) break;
+		if (!occ.hasSame(localDate, "day")) continue;
+
+		const timestamp = occJs.getTime();
+
+		// skip if overridden or excluded
+		if (overriddenByUid[uid]?.has(timestamp)) continue;
+		if (exdatesByUid[uid]?.has(timestamp)) continue;
+
+		const durationSecs = event.duration.toSeconds();
+		events.push({
+		    summary: event.summary,
+		    start: occ,
+		    end: occ.plus({ seconds: durationSecs }),
+		    uid,
+		});
+	    }
+	} else {
+	    const start = DateTime.fromJSDate(dtstart, { zone: timezone });
+	    if (start.hasSame(localDate, "day")) {
+		const end = DateTime.fromJSDate(dtend, { zone: timezone });
+		events.push({ summary: event.summary, start, end, uid });
+	    }
+	}
+    }
+
+    // Step 4: add all overrides that now fall on this date
+    for (const list of Object.values(overridesByUid)) {
+	for (const event of list) {
+	    const dtstart = event.startDate?.toJSDate();
+	    const dtend = event.endDate?.toJSDate();
+	    if (!dtstart || !dtend) continue;
+
+	    const start = DateTime.fromJSDate(dtstart, { zone: timezone });
+	    if (start.hasSame(localDate, "day")) {
+		const end = DateTime.fromJSDate(dtend, { zone: timezone });
+		events.push({ summary: event.summary, start, end, uid: event.uid });
+	    }
+	}
+    }
+
+    return events;
+}
+
+export async function writeCalendarCache(app: App, date: DateTime, events: EventData[]) {
+    const filePath = `.tascal/${date.toISODate()}.json`;
+    const folderPath = `.tascal`;
+    const adapter = app.vault.adapter;
+
+    if (!(await adapter.exists(folderPath))) {
+	await adapter.mkdir(folderPath);
+    }
+
+    const serializable = events.map(ev => ({
+	summary: ev.summary,
+	start: ev.start.toISO(),
+	end: ev.end.toISO(),
+	uid: ev.uid,
+	source: ev.source ?? "calendar",
+	done: ev.done ?? false,
+    }));
+
+    await adapter.write(filePath, JSON.stringify(serializable, null, 2));
+}
+
+export async function readCalendarCache(app: App, date: DateTime): Promise<EventData[] | null> {
+    const filePath = `.tascal/${date.toISODate()}.json`;
+    const adapter = app.vault.adapter;
+
+    if (!(await adapter.exists(filePath))) return null;
+
+    const text = await adapter.read(filePath);
+    const raw = JSON.parse(text);
+    return raw.map((item: any) => ({
+	summary: item.summary,
+	start: DateTime.fromISO(item.start),
+	end: DateTime.fromISO(item.end),
+	uid: item.uid,
+	done: item.done ?? false,
+	source: item.source ?? "calendar",
+    }));
+}
