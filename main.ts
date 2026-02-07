@@ -1,30 +1,34 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from 'obsidian';
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from 'obsidian';
 import ICAL from "ical.js";
-import { requestUrl } from "obsidian";
 import { DateTime } from "luxon";
-
-// Remember to rename these classes and interfaces!
-
-interface IcsPluginSettings {
-    calendars: { id: string; url: string }[];
-    timezone: string;
-}
 
 interface EventData {
     summary: string;
     start: DateTime;
     end: DateTime;
     uid: string;
+    done?: boolean;
+    source?: string;
+}
+
+interface TimeTrackingEntry {
+    start: string; // "15:30"
+    duration: string; // "00:34"
+}
+
+interface TimeTrackingData {
+    [eventId: string]: TimeTrackingEntry[];
 }
 
 interface TascalSettings {
     timezone: string;
-    calendars: CalendarInfo[];
+    calendars: { id: string; url: string }[];
     defaultDayStart: string; // e.g., "08:00"
     defaultDayEnd: string;   // e.g., "22:00"
     dayOverrides: Record<string, { start: string; end: string }>; // e.g., { "Saturday": { start: "10:00", end: "18:00" } }
-    rescheduledFolder: string;
-    recurringFilePath: string;
+    recurringEvents: string[]; // Array of recurring event definitions
+    timeTrackingData: TimeTrackingData;
+    currentTrackingEventId: string | null;
 }
 
 const DEFAULT_SETTINGS: TascalSettings = {
@@ -36,28 +40,27 @@ const DEFAULT_SETTINGS: TascalSettings = {
 	"Saturday": { start: "10:00", end: "18:00" },
 	"Sunday": { start: "10:00", end: "20:00" }
     },
-    rescheduledFolder: "tascal",
-    recurringFilePath: "tascal/recurring.md"
+    recurringEvents: [],
+    timeTrackingData: {},
+    currentTrackingEventId: null
 };
 
 
-export default class IcsImporterPlugin extends Plugin {
+export default class TascalPlugin extends Plugin {
     settings: TascalSettings;
+    calendarCache: EventData[] = [];
 
     async onload() {
 	await this.loadSettings();
 
-	// This adds a settings tab so the user can configure various aspects of the plugin
-	//this.addSettingTab(new IcsSettingTab(this.app, this));
+	// Migrate recurring events from file to settings if not already done
+	await this.migrateRecurringEvents();
+
 	this.addSettingTab(new TascalSettingTab(this.app, this));
 
-	// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-	// Using this function will automatically remove the event listener when this plugin is disabled.
-	// test command
-
 	this.addCommand({
-	    id: "insert-events-from-ics",
-	    name: "Insert/update calendar events from ICS",
+	    id: "import-calendar-events",
+	    name: "Sync calendar",
 	    callback: async () => {
 		try {
 		    const activeFile = this.app.workspace.getActiveFile();
@@ -91,35 +94,57 @@ export default class IcsImporterPlugin extends Plugin {
 		    const note = await this.app.vault.read(activeFile);
 		    const { timeline, manualBlockLines } = extractTascalSection(note);
 
+		    // Extract current time tracking data from timeline
+		    const currentTimeTracking = extractTimeTrackingFromTimeline(timeline);
+		    
+		    // Load time tracking data from daily JSON file
+		    const timeTrackingFilePath = `.tascal/tt-${dateStr}.json`;
+		    const fileTimeTrackingData = await loadTimeTrackingData(this.app, timeTrackingFilePath);
+		    
 		    const rescheduledLines = await loadRescheduledTasks(
-			this.settings.rescheduledFolder,
+			this.app,
+			".tascal",
 			dateStr,
 			this.settings.timezone,
 			localDate
 		    );
-		    console.log(this.settings.rescheduledFolder, dateStr, this.settings.timezone, localDate);
-		    console.log("rescheduledLines: ", rescheduledLines);
-		    
 		    manualBlockLines.push(...rescheduledLines);
 
-		    const recurringPath = `${this.settings.recurringFilePath ?? 'tascal/recurring'}`;
-
-		    const recurringLines = await loadRecurringTasks(recurringPath, localDate);
+		    const recurringLines = await loadRecurringTasks(this.app, this.settings.recurringEvents, localDate, this);
 		    manualBlockLines.push(...recurringLines);
 
 
-		    const { blocks: finalManualBlocks } = parseManualBlocksFromLines(
+		    const { blocks: finalManualBlocks, rescheduled } = parseManualBlocksFromLines(
 			manualBlockLines,
 			localDate,
 			this.settings.timezone
 		    );
 
-		    const allManualBlocks = [...finalManualBlocks];
+		    // Migrate time tracking data from time-based IDs to UIDs
+		    const migratedTimeTrackingData = migrateTimeTrackingData(
+			fileTimeTrackingData,
+			allEvents,
+			finalManualBlocks,
+			dateStr
+		    );
+		    
+		    // Refresh time tracking data: keep only currently tracked event, replace others with migrated file data
+		    const refreshedTimeTracking: TimeTrackingData = {};
+		    
+		    // Keep the currently tracked event if it exists
+		    if (this.settings.currentTrackingEventId && this.settings.timeTrackingData[this.settings.currentTrackingEventId]) {
+			refreshedTimeTracking[this.settings.currentTrackingEventId] = this.settings.timeTrackingData[this.settings.currentTrackingEventId];
+		    }
+		    
+		    // Add all migrated time tracking data from file
+		    Object.assign(refreshedTimeTracking, migratedTimeTrackingData);
+		    
+		    this.settings.timeTrackingData = refreshedTimeTracking;
 
-		    const timelineLines = generateSafeTimelineLines(allEvents, allManualBlocks, localDate, timeline || [], this.settings);
+		    const timelineLines = generateSafeTimelineLines(allEvents, finalManualBlocks, localDate, timeline || [], this.settings, fileTimeTrackingData);
 		    const updatedNote = updateTascalSection(note, timelineLines, manualBlockLines);
 
-		    await writeCalendarCache(localDate, allEvents);
+		    await writeCalendarCache(this.app, localDate, allEvents);
 		    await this.app.vault.modify(activeFile, updatedNote);
 		    new Notice(`Inserted ${allEvents.length} event(s) for ${dateStr}.`);
 		} catch (error) {
@@ -130,8 +155,8 @@ export default class IcsImporterPlugin extends Plugin {
 	});
 
 	this.addCommand({
-	    id: "update-timeline-view",
-	    name: "Update timeline with manual and calendar events",
+	    id: "update-timeline",
+	    name: "Update timeline",
 	    callback: async () => {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) return new Notice("No active file.");
@@ -141,32 +166,39 @@ export default class IcsImporterPlugin extends Plugin {
 		if (!dateStr) return new Notice("Note must start with a date (YYYY-MM-DD)");
 
 		const localDate = DateTime.fromISO(dateStr, { zone: this.settings.timezone });
-		let calendarEvents = this.calendarCache || [];
+		let calendarEvents: EventData[] = [];
 
-		if (calendarEvents.length === 0) {
-		    const cached = await readCalendarCache(localDate);
-		    if (cached) {
-			calendarEvents = cached;
+		// Try to load calendar events from cache for any date
+		const cached = await readCalendarCache(this.app, localDate);
+		if (cached) {
+		    calendarEvents = cached;
+		    if (localDate.toISODate() === DateTime.now().setZone(this.settings.timezone).toISODate()) {
 			this.calendarCache = cached;
-			new Notice(`Loaded calendar events from cache for ${localDate.toISODate()}.`);
-		    } else {
-			new Notice("No cached calendar events found. Run ICS import first.");
 		    }
+		    new Notice(`Loaded ${cached.length} calendar events from cache for ${localDate.toISODate()}.`);
+		} else {
+		    new Notice("No cached calendar events found for this date.");
 		}
 
 		const { timeline, manualBlockLines } = extractTascalSection(note);
 
+		// Extract current time tracking data from timeline
+		const currentTimeTracking = extractTimeTrackingFromTimeline(timeline);
+		
+		// Load time tracking data from daily JSON file
+		const timeTrackingFilePath = `.tascal/tt-${dateStr}.json`;
+		const fileTimeTrackingData = await loadTimeTrackingData(this.app, timeTrackingFilePath);
+		
 		const rescheduledLines = await loadRescheduledTasks(
-		    this.settings.rescheduledFolder,
+		    this.app,
+		    ".tascal",
 		    dateStr,
 		    this.settings.timezone,
 		    localDate
 		);
 		manualBlockLines.push(...rescheduledLines);
 
-		const recurringPath = `${this.settings.recurringFilePath ?? 'tascal/recurring.md'}`;
-
-		const recurringLines = await loadRecurringTasks(recurringPath, localDate);
+		const recurringLines = await loadRecurringTasks(this.app, this.settings.recurringEvents, localDate, this);
 		manualBlockLines.push(...recurringLines);
 
 
@@ -176,14 +208,34 @@ export default class IcsImporterPlugin extends Plugin {
 		    this.settings.timezone
 		);
 
-		const allManualBlocks = [...finalManualBlocks];
+		// Migrate time tracking data from time-based IDs to UIDs
+		const migratedTimeTrackingData = migrateTimeTrackingData(
+		    fileTimeTrackingData,
+		    calendarEvents,
+		    finalManualBlocks,
+		    dateStr
+		);
+		
+		// Refresh time tracking data: keep only currently tracked event, replace others with migrated file data
+		const refreshedTimeTracking: TimeTrackingData = {};
+		
+		// Keep the currently tracked event if it exists
+		if (this.settings.currentTrackingEventId && this.settings.timeTrackingData[this.settings.currentTrackingEventId]) {
+		    refreshedTimeTracking[this.settings.currentTrackingEventId] = this.settings.timeTrackingData[this.settings.currentTrackingEventId];
+		}
+		
+		// Add all migrated time tracking data from file
+		Object.assign(refreshedTimeTracking, migratedTimeTrackingData);
+		
+		this.settings.timeTrackingData = refreshedTimeTracking;
 
 		// Save newly rescheduled entries to the persistent file
 		for (const task of rescheduled) {
-		    await appendRescheduledTask(this.settings.rescheduledFolder, task.target, dateStr, task.line);
+		    await appendRescheduledTask(this.app, ".tascal", task.target, dateStr, task.line);
 		}
 
-		const allBlocks = [...calendarEvents, ...allManualBlocks];
+		// Combine calendar events and manual blocks
+		const allBlocks = [...calendarEvents, ...finalManualBlocks];
 		allBlocks.sort((a, b) => a.start.toMillis() - b.start.toMillis());
 
 		const timelineLines = generateSafeTimelineLines(
@@ -191,7 +243,8 @@ export default class IcsImporterPlugin extends Plugin {
 		    [],
 		    localDate,
 		    timeline || [],
-		    this.settings
+		    this.settings,
+		    fileTimeTrackingData
 		);
 
 		const updatedNote = updateTascalSection(note, timelineLines, manualBlockLines);
@@ -202,23 +255,57 @@ export default class IcsImporterPlugin extends Plugin {
 
 
 	this.addCommand({
-	    id: "format-manual-blocks",
-	    name: "Format manual blocks",
+	    id: "format-blocks",
+	    name: "Format tasks",
 	    callback: async () => {
 		await this.formatManualBlocks();
 	    }
 	});
 
-	
-	this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-	    console.log('click', evt);
+	// Time tracking commands
+	this.addCommand({
+	    id: "start-time-tracking",
+	    name: "Start time tracking",
+	    callback: async () => {
+		await this.startTimeTracking();
+	    }
 	});
 
-	// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-	this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-    }
+	this.addCommand({
+	    id: "stop-time-tracking",
+	    name: "Stop time tracking",
+	    callback: async () => {
+		await this.stopTimeTracking();
+	    }
+	});
 
-    onunload() {
+	this.addCommand({
+	    id: "save-time-tracking-data",
+	    name: "Save time tracking data",
+	    callback: async () => {
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+		    new Notice("No active note open.");
+		    return;
+		}
+		const note = await this.app.vault.read(activeFile);
+		const { timeline } = extractTascalSection(note);
+		const dateStr = extractDateFromFilename(activeFile.name);
+		if (!dateStr) {
+		    new Notice("Note must start with a date (YYYY-MM-DD)");
+		    return;
+		}
+		const timeTrackingData = extractTimeTrackingFromTimeline(timeline);
+		const timeTrackingFilePath = `.tascal/tt-${dateStr}.json`;
+		await saveTimeTrackingData(this.app, timeTrackingFilePath, timeTrackingData);
+		
+		// Update the stats line with total tracked time
+		const updatedNoteWithStats = this.updateStatsLineWithTotalTT(note, timeTrackingData);
+		await this.app.vault.modify(activeFile, updatedNoteWithStats);
+		
+		new Notice("✅ Time tracking data saved from timeline.");
+	    }
+	});
 
     }
 
@@ -228,6 +315,40 @@ export default class IcsImporterPlugin extends Plugin {
 
     async saveSettings() {
 	await this.saveData(this.settings);
+    }
+
+    async migrateRecurringEvents() {
+	// Only migrate if we haven't already (check if settings has recurring events)
+	if (this.settings.recurringEvents.length === 0) {
+	    try {
+		const oldRecurringPath = "tascal/recurring.md";
+		const adapter = this.app.vault.adapter;
+		
+		if (await adapter.exists(oldRecurringPath)) {
+		    const content = await adapter.read(oldRecurringPath);
+		    const lines = content.split("\n").filter(line => line.trim());
+		    
+		    // Migrate lines to settings, preserving all markers
+		    this.settings.recurringEvents = lines;
+		    await this.saveSettings();
+		    
+		    // Move the file to .tascal folder
+		    const newRecurringPath = ".tascal/recurring.md";
+		    const folderPath = ".tascal";
+		    
+		    if (!(await adapter.exists(folderPath))) {
+			await adapter.mkdir(folderPath);
+		    }
+		    
+		    await adapter.write(newRecurringPath, content);
+		    await adapter.remove(oldRecurringPath);
+		    
+		    console.log("Migrated recurring events from file to settings");
+		}
+	    } catch (error) {
+		console.error("Error migrating recurring events:", error);
+	    }
+	}
     }
 
     async formatManualBlocks() {
@@ -251,8 +372,6 @@ export default class IcsImporterPlugin extends Plugin {
             new Notice("No Tascal section found.");
             return;
 	}
-
-	//const manualBlocks = parseManualBlocksFromLines(manualBlockLines, localDate, this.settings.timezone);
 
 	const { blocks: manualBlocks, rescheduled } = parseManualBlocksFromLines(
 	    manualBlockLines,
@@ -291,20 +410,551 @@ export default class IcsImporterPlugin extends Plugin {
 	await this.app.vault.modify(activeFile, updatedNote);
 	new Notice("✅ Manual blocks formatted!");
     }
+
+    async startTimeTracking() {
+	const activeFile = this.app.workspace.getActiveFile();
+	if (!activeFile) {
+	    new Notice("No active note open.");
+	    return;
+	}
+
+	const note = await this.app.vault.read(activeFile);
+	const { timeline } = extractTascalSection(note);
+
+	// Check if there's exactly one line with ">" after the checkbox
+	const trackingLines = timeline.filter(line => {
+	    const match = line.match(/^- \[( |x)]\s*(>)\s*(\d{1,2}:\d{2})/);
+	    return match !== null;
+	});
+	
+	if (trackingLines.length === 1) {
+	    // Start tracking for the existing line
+	    const trackingLine = trackingLines[0];
+	    const eventId = this.generateEventId(trackingLine);
+	    const startTime = DateTime.now().setZone(this.settings.timezone).toFormat("HH:mm");
+	    
+	    // Store start time in plugin state
+	    this.settings.timeTrackingData[eventId] = this.settings.timeTrackingData[eventId] || [];
+	    this.settings.timeTrackingData[eventId].push({ start: startTime, duration: "" });
+	    this.settings.currentTrackingEventId = eventId;
+	    await this.saveSettings();
+	    
+	    // Add start time to timeline in curly braces format
+	    const noteWithTracking = this.addTimeTrackingToTimeline(note, trackingLine, startTime);
+	    await this.app.vault.modify(activeFile, noteWithTracking);
+	    
+	    // Extract time tracking data from updated timeline and overwrite the JSON file
+	    const { timeline: updatedTimeline } = extractTascalSection(noteWithTracking);
+	    const timelineTimeTrackingData = extractTimeTrackingFromTimeline(updatedTimeline);
+	    const dateStr = extractDateFromFilename(activeFile.name);
+	    const timeTrackingFilePath = `.tascal/tt-${dateStr}.json`;
+	    await saveTimeTrackingData(this.app, timeTrackingFilePath, timelineTimeTrackingData);
+	    
+	    new Notice(`Started tracking: ${this.extractEventSummary(trackingLine)}`);
+	} else if (trackingLines.length > 1) {
+	    new Notice("Only one event can be tracked at a time. Please remove extra '>' symbols.");
+	} else {
+	    // Show modal to select event
+	    await this.showEventSelectionModal(activeFile, note);
+	}
+    }
+
+    async stopTimeTracking() {
+	const activeFile = this.app.workspace.getActiveFile();
+	if (!activeFile) {
+	    new Notice("No active note open.");
+	    return;
+	}
+
+	const note = await this.app.vault.read(activeFile);
+	const { timeline } = extractTascalSection(note);
+
+	// Find the line with ">" after the checkbox
+	const trackingLine = timeline.find(line => {
+	    const match = line.match(/^- \[( |x)]\s*(>)\s*(\d{1,2}:\d{2})/);
+	    return match !== null;
+	});
+	
+	if (!trackingLine) {
+	    new Notice("No event is currently being tracked.");
+	    return;
+	}
+
+	const eventId = this.generateEventId(trackingLine);
+	const trackingData = this.settings.timeTrackingData[eventId];
+	
+	if (!trackingData || trackingData.length === 0) {
+	    new Notice("No tracking data found for this event.");
+	    return;
+	}
+
+	// Find the last entry without duration (active tracking)
+	const lastEntry = trackingData[trackingData.length - 1];
+	if (lastEntry.duration !== "") {
+	    new Notice("No active tracking session found.");
+	    return;
+	}
+
+	// Calculate duration
+	const startTime = DateTime.fromFormat(lastEntry.start, "HH:mm", { zone: this.settings.timezone });
+	const endTime = DateTime.now().setZone(this.settings.timezone);
+	const durationMinutes = endTime.diff(startTime, "minutes").minutes;
+	const durationStr = this.formatDurationForTracking(durationMinutes);
+	
+	// Update the duration
+	lastEntry.duration = durationStr;
+	this.settings.currentTrackingEventId = null;
+	await this.saveSettings();
+
+	// Complete the duration in the timeline
+	const updatedNote = this.completeTimeTrackingInTimeline(note, eventId, lastEntry.start, durationStr);
+	await this.app.vault.modify(activeFile, updatedNote);
+
+	// Extract time tracking data from updated timeline and overwrite the JSON file
+	const { timeline: updatedTimeline } = extractTascalSection(updatedNote);
+	const timelineTimeTrackingData = extractTimeTrackingFromTimeline(updatedTimeline);
+	const dateStr = extractDateFromFilename(activeFile.name);
+	const timeTrackingFilePath = `.tascal/tt-${dateStr}.json`;
+	await saveTimeTrackingData(this.app, timeTrackingFilePath, timelineTimeTrackingData);
+	
+	// Update the stats line with total tracked time
+	const updatedNoteWithStats = this.updateStatsLineWithTotalTT(updatedNote, timelineTimeTrackingData);
+	await this.app.vault.modify(activeFile, updatedNoteWithStats);
+	
+	new Notice(`Stopped tracking: ${this.extractEventSummary(trackingLine)} (${durationStr})`);
+    }
+
+    private generateEventId(line: string): string {
+	// Extract time range and summary from the line
+	const match = line.match(/>?\s*- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2})\s+(.+?)(?:\s*\{TT:[^}]*\})?$/);
+	if (match) {
+	    const [_, checkbox, tracking, start, end, summary] = match;
+	    const eventSummary = summary.trim();
+	    
+	    // Try to find matching event in calendar cache or manual blocks
+	    const allEvents = [...this.calendarCache];
+	    
+	    // For now, fall back to the old method if we can't find a match
+	    // This ensures backward compatibility
+	    const matchingEvent = allEvents.find(event => 
+		event.start.toFormat("HH:mm") === start &&
+		event.end.toFormat("HH:mm") === end &&
+		event.summary === eventSummary
+	    );
+	    
+	    if (matchingEvent) {
+		return matchingEvent.uid;
+	    }
+	    
+	    // Fallback to time-based ID for backward compatibility
+	    return `${start}-${end}-${eventSummary}`;
+	}
+	
+	// For manual tasks, generate a different pattern
+	const manualMatch = line.match(/>?\s*- \[( |x)]\s*(>?\s*)@(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})\s+(.+?)(?:\s*\{TT:[^}]*\})?$/);
+	if (manualMatch) {
+	    const [_, checkbox, tracking, start, end, summary] = manualMatch;
+	    const eventSummary = summary.trim();
+	    
+	    // For manual events, we can reconstruct the UID from the current date and summary
+	    const activeFile = this.app.workspace.getActiveFile();
+	    if (activeFile) {
+		const dateStr = extractDateFromFilename(activeFile.name);
+		if (dateStr) {
+		    return `manual-${dateStr}-${eventSummary.replace(/[^a-zA-Z0-9]/g, '-')}`;
+		}
+	    }
+	    
+	    // Fallback
+	    return `manual_${start}-${end}-${eventSummary}`;
+	}
+	
+	// Fallback
+	return `event_${Date.now()}`;
+    }
+
+    private extractEventSummary(line: string): string {
+	// Remove ">" and time tracking info
+	const cleanLine = line.replace(/^>\s*/, "").replace(/\s*\{TT:[^}]*\}/, "");
+	
+	// Extract summary after time range
+	const match = cleanLine.match(/- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2})\s+(.+)$/);
+	if (match) {
+	    return match[5].trim();
+	}
+	
+	const manualMatch = cleanLine.match(/- \[( |x)]\s*(>?\s*)@(\d{1,2}:\d{2})[–-](\d{1,2}:\d{2})\s+(.+)$/);
+	if (manualMatch) {
+	    return manualMatch[5].trim();
+	}
+	
+	return cleanLine.trim();
+    }
+
+    private formatDurationForTracking(minutes: number): string {
+	const hours = Math.floor(minutes / 60);
+	const mins = Math.floor(minutes % 60);
+	return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+    }
+
+    private async showEventSelectionModal(activeFile: any, note: string) {
+	const { timeline } = extractTascalSection(note);
+	const eventLines = timeline.filter(line => 
+	    line.match(/^- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2})/) && 
+	    !line.includes("available")
+	);
+
+	if (eventLines.length === 0) {
+	    new Notice("No events found in timeline.");
+	    return;
+	}
+
+	const modal = new EventSelectionModal(this.app, eventLines, async (selectedLine: string) => {
+	    // Add ">" to the selected line
+	    const updatedNote = this.addTrackingSymbol(note, selectedLine);
+	    await this.app.vault.modify(activeFile, updatedNote);
+	    
+	    // Start tracking
+	    const eventId = this.generateEventId(selectedLine);
+	    const startTime = DateTime.now().setZone(this.settings.timezone).toFormat("HH:mm");
+	    
+	    this.settings.timeTrackingData[eventId] = this.settings.timeTrackingData[eventId] || [];
+	    this.settings.timeTrackingData[eventId].push({ start: startTime, duration: "" });
+	    this.settings.currentTrackingEventId = eventId;
+	    await this.saveSettings();
+	    
+	    // Add start time to timeline in curly braces format
+	    const noteWithTracking = this.addTimeTrackingToTimeline(note, selectedLine, startTime);
+	    await this.app.vault.modify(activeFile, noteWithTracking);
+	    
+	    // Extract time tracking data from updated timeline and overwrite the JSON file
+	    const { timeline: updatedTimeline } = extractTascalSection(noteWithTracking);
+	    const timelineTimeTrackingData = extractTimeTrackingFromTimeline(updatedTimeline);
+	    const dateStr = extractDateFromFilename(activeFile.name);
+	    const timeTrackingFilePath = `.tascal/tt-${dateStr}.json`;
+	    await saveTimeTrackingData(this.app, timeTrackingFilePath, timelineTimeTrackingData);
+	    
+	    new Notice(`Started tracking: ${this.extractEventSummary(selectedLine)}`);
+	});
+	
+	modal.open();
+    }
+
+    private addTrackingSymbol(note: string, targetLine: string): string {
+	const lines = note.split("\n");
+	const startTag = "<!--tascal-->";
+	const endTag = "<!--/tascal-->";
+	
+	let inTascalSection = false;
+	let inTimeline = false;
+	
+	for (let i = 0; i < lines.length; i++) {
+	    const line = lines[i];
+	    
+	    if (line.includes(startTag)) {
+		inTascalSection = true;
+		continue;
+	    }
+	    
+	    if (line.includes(endTag)) {
+		inTascalSection = false;
+		continue;
+	    }
+	    
+	    if (inTascalSection && line.trim() === "### Timeline") {
+		inTimeline = true;
+		continue;
+	    }
+	    
+	    if (inTimeline && line.startsWith("### ")) {
+		inTimeline = false;
+		continue;
+	    }
+	    
+	    if (inTimeline && line.trim() === targetLine.trim()) {
+		// Remove any existing ">" and add it after the checkbox but before the time
+		const match = line.match(/^(- \[( |x)])\s*(>?\s*)(\d{1,2}:\d{2})/);
+		if (match) {
+		    const [_, checkbox, checked, existingTracking, time] = match;
+		    lines[i] = line.replace(/^(- \[( |x)])\s*(>?\s*)(\d{1,2}:\d{2})/, `$1 > $4`);
+		}
+		break;
+	    }
+	}
+	
+	return lines.join("\n");
+    }
+
+    private addTimeTrackingToTimeline(note: string, trackingLine: string, startTime: string): string {
+	const lines = note.split("\n");
+	const startTag = "<!--tascal-->";
+	const endTag = "<!--/tascal-->";
+	
+	let inTascalSection = false;
+	let inTimeline = false;
+	
+	for (let i = 0; i < lines.length; i++) {
+	    const line = lines[i];
+	    
+	    if (line.includes(startTag)) {
+		inTascalSection = true;
+		continue;
+	    }
+	    
+	    if (line.includes(endTag)) {
+		inTascalSection = false;
+		continue;
+	    }
+	    
+	    if (inTascalSection && line.trim() === "### Timeline") {
+		inTimeline = true;
+		continue;
+	    }
+	    
+	    if (inTimeline && line.startsWith("### ")) {
+		inTimeline = false;
+		continue;
+	    }
+	    
+	    if (inTimeline && line.trim() === trackingLine.trim()) {
+		// Add ">" after checkbox if not present
+		const match = line.match(/^(- \[( |x)])\s*(>?\s*)(\d{1,2}:\d{2})/);
+		if (match) {
+		    const [_, checkbox, checked, existingTracking, time] = match;
+		    let updatedLine = line.replace(/^(- \[( |x)])\s*(>?\s*)(\d{1,2}:\d{2})/, `$1 > $4`);
+		    
+		    // Add or update time tracking data in curly braces
+		    if (updatedLine.includes("{TT:")) {
+			// Add new session to existing tracking data
+			updatedLine = updatedLine.replace(/\{TT:([^}]*)\}/, `{TT: $1, ${startTime}::}`);
+		    } else {
+			// Add new time tracking data
+			updatedLine = updatedLine + ` {TT: ${startTime}::}`;
+		    }
+		    lines[i] = updatedLine;
+		}
+		break;
+	    }
+	}
+	
+	return lines.join("\n");
+    }
+
+    private completeTimeTrackingInTimeline(note: string, eventId: string, startTime: string, durationStr: string): string {
+	const lines = note.split("\n");
+	const startTag = "<!--tascal-->";
+	const endTag = "<!--/tascal-->";
+	
+	let inTascalSection = false;
+	let inTimeline = false;
+	
+	for (let i = 0; i < lines.length; i++) {
+	    const line = lines[i];
+	    
+	    if (line.includes(startTag)) {
+		inTascalSection = true;
+		continue;
+	    }
+	    
+	    if (line.includes(endTag)) {
+		inTascalSection = false;
+		continue;
+	    }
+	    
+	    if (inTascalSection && line.trim() === "### Timeline") {
+		inTimeline = true;
+		continue;
+	    }
+	    
+	    if (inTimeline && line.startsWith("### ")) {
+		inTimeline = false;
+		continue;
+	    }
+	    
+	    if (inTimeline) {
+		const trackingMatch = line.match(/^- \[( |x)]\s*(>)\s*(\d{1,2}:\d{2})/);
+		if (trackingMatch) {
+		    const currentEventId = this.generateEventId(line);
+		    if (currentEventId === eventId) {
+			// Find the last incomplete session in {TT: ...} and complete it
+			lines[i] = line.replace(/\{TT:([^}]*)\}/, (match, content) => {
+			    const entries = content.split(",").map((e: string) => e.trim());
+			    for (let j = entries.length - 1; j >= 0; j--) {
+				if (/::\s*$/.test(entries[j])) {
+				    entries[j] = `${startTime}::${durationStr}`;
+				    break;
+				}
+			    }
+			    return `{TT: ${entries.join(", ")}}`;
+			});
+			break;
+		    }
+		}
+	    }
+	}
+	return lines.join("\n");
+    }
+
+    private updateStatsLineWithTotalTT(note: string, timeTrackingData: TimeTrackingData): string {
+	const lines = note.split("\n");
+	const startTag = "<!--tascal-->";
+	const endTag = "<!--/tascal-->";
+	
+	let inTascalSection = false;
+	let inTimeline = false;
+	
+	// Find and update the stats line
+	for (let i = 0; i < lines.length; i++) {
+	    const line = lines[i];
+	    
+	    if (line.includes(startTag)) {
+		inTascalSection = true;
+		continue;
+	    }
+	    
+	    if (line.includes(endTag)) {
+		inTascalSection = false;
+		continue;
+	    }
+	    
+	    if (inTascalSection && line.trim() === "### Timeline") {
+		inTimeline = true;
+		continue;
+	    }
+	    
+	    if (inTimeline && line.startsWith("### ")) {
+		break;
+	    }
+	    
+	    // Check if this is the stats line (contains "done |")
+	    if (inTimeline && line.includes("done |")) {
+		// Calculate total tracked time
+		let totalTrackedMinutes = 0;
+		for (const [eventId, entries] of Object.entries(timeTrackingData)) {
+		    for (const entry of entries) {
+			if (entry.duration && entry.duration !== "") {
+			    const [hours, minutes] = entry.duration.split(":").map(Number);
+			    totalTrackedMinutes += hours * 60 + minutes;
+			}
+		    }
+		}
+		const totalTrackedStr = formatDuration(totalTrackedMinutes);
+		
+		// Update the stats line to include total tracked time
+		const updatedStatsLine = line.replace(/\|\s*\*\*Total TT:[^*]*\*\*/, "") + ` | **Total TT: ${totalTrackedStr}**`;
+		lines[i] = updatedStatsLine;
+		break;
+	    }
+	}
+	
+	return lines.join("\n");
+    }
+
+
 }
 
-class SampleModal extends Modal {
-    constructor(app: App) {
+class EventSelectionModal extends Modal {
+    private eventLines: string[];
+    private onSelect: (selectedLine: string) => void;
+
+    constructor(app: App, eventLines: string[], onSelect: (selectedLine: string) => void) {
 	super(app);
+	this.eventLines = eventLines;
+	this.onSelect = onSelect;
     }
 
     onOpen() {
-	const {contentEl} = this;
-	contentEl.setText('Woah!');
+	const { contentEl } = this;
+	contentEl.empty();
+
+	contentEl.createEl("h2", { text: "Select Event to Track" });
+	contentEl.createEl("p", { 
+	    text: "Click on an event to start time tracking", 
+	    cls: "modal-description" 
+	});
+
+	const container = contentEl.createEl("div", { cls: "event-selection-container" });
+
+	if (this.eventLines.length === 0) {
+	    container.createEl("p", { 
+		text: "No events found in timeline.", 
+		cls: "no-events-message" 
+	    });
+	} else {
+	    this.eventLines.forEach(line => {
+		const eventDiv = container.createEl("div", { cls: "event-option" });
+		
+		// Parse the event line to extract time and summary
+		const match = line.match(/^- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2}) (.+?)(?:\s*\{TT:[^}]*\})?$/);
+		if (match) {
+		    const [_, checkbox, tracking, start, end, summary] = match;
+		    const isCompleted = checkbox === "x";
+		    const isCurrentlyTracked = tracking.includes(">");
+		    
+		    // Event time range
+		    const timeDiv = eventDiv.createEl("div", { cls: "event-time" });
+		    timeDiv.setText(`${start}–${end}`);
+		    
+		    // Event summary
+		    const summaryDiv = eventDiv.createEl("div", { cls: "event-summary" });
+		    summaryDiv.setText(summary.trim());
+		    
+		    // Status indicators
+		    const statusDiv = eventDiv.createEl("div", { cls: "event-status" });
+		    if (isCompleted) {
+			statusDiv.createEl("span", { 
+			    text: "✓", 
+			    cls: "status-completed",
+			    title: "Completed"
+			});
+		    }
+		    if (isCurrentlyTracked) {
+			statusDiv.createEl("span", { 
+			    text: "▶", 
+			    cls: "status-tracking",
+			    title: "Currently tracked"
+			});
+		    }
+		    
+		    // Select button
+		    const selectBtn = eventDiv.createEl("button", { 
+			text: "Track", 
+			cls: "track-button" 
+		    });
+		    selectBtn.addEventListener("click", () => {
+			this.onSelect(line);
+			this.close();
+		    });
+		} else {
+		    // Fallback for non-standard format
+		    eventDiv.createEl("div", { 
+			text: line.trim(), 
+			cls: "event-fallback" 
+		    });
+		    const selectBtn = eventDiv.createEl("button", { 
+			text: "Track", 
+			cls: "track-button" 
+		    });
+		    selectBtn.addEventListener("click", () => {
+			this.onSelect(line);
+			this.close();
+		    });
+		}
+	    });
+	}
+
+	// Cancel button
+	const cancelBtn = contentEl.createEl("button", { 
+	    text: "Cancel", 
+	    cls: "cancel-button" 
+	});
+	cancelBtn.addEventListener("click", () => {
+	    this.close();
+	});
     }
 
     onClose() {
-	const {contentEl} = this;
+	const { contentEl } = this;
 	contentEl.empty();
     }
 }
@@ -430,9 +1080,9 @@ function extractTascalSection(content: string): {
     start: number;
     end: number;
 } {
-    const startTag = "<!--TASCAL-START-->";
-    const endTag = "<!--TASCAL-END-->";
-    const manualTag = "<!--TASCAL-MANUAL-BLOCKS-SECTION";
+    const startTag = "<!--tascal-->";
+    const endTag = "<!--/tascal-->";
+    const manualTag = "<!--manual";
 
     const start = content.indexOf(startTag);
     const end = content.indexOf(endTag);
@@ -470,35 +1120,51 @@ function extractTascalSection(content: string): {
     };
 }
 
-function buildPlainTimeline(
-    calendarEvents: EventData[],
-    manualBlocks: EventData[],
-    date: DateTime
-): string[] {
-    const allBlocks = [...calendarEvents, ...manualBlocks];
-    allBlocks.sort((a, b) => a.start.toMillis() - b.start.toMillis());
+function extractCheckboxStateMap(timelineLines: string[]): Map<string, boolean> {
+    const checkboxMap = new Map<string, boolean>();
+    // Updated pattern to handle ">" symbol after checkbox but before time
+    const pattern = /^- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2}) (.+?)(?:\s*\{TT:[^}]*\})?$/;
 
-    const timeline: string[] = [];
-    let cursor = date.startOf("day");
-
-    for (const block of allBlocks) {
-	if (block.start > cursor) {
-	    timeline.push(`*${cursor.toFormat("HH:mm")}–${block.start.toFormat("HH:mm")} available*`);
-	}
-
-	timeline.push(`- [ ] *${block.start.toFormat("HH:mm")}–${block.end.toFormat("HH:mm")} ${block.summary}*`);
-
-	if (block.end > cursor) {
-	    cursor = block.end;
+    for (const line of timelineLines) {
+	const match = line.match(pattern);
+	if (match) {
+	    const checked = match[1] === "x";
+	    const start = match[3];
+	    const end = match[4];
+	    const summary = match[5];
+	    const key = `${start}-${summary}`;
+	    checkboxMap.set(key, checked);
 	}
     }
 
-    const endOfDay = date.endOf("day").startOf("minute");
-    if (cursor < endOfDay) {
-	timeline.push(`*${cursor.toFormat("HH:mm")}–${endOfDay.toFormat("HH:mm")} available*`);
+    return checkboxMap;
+}
+
+function extractTimeTrackingData(timelineLines: string[]): Map<string, string> {
+    const timeTrackingMap = new Map<string, string>();
+    const pattern = /^- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2}) (.+?)(?:\s*\{TT:([^}]*)\})?$/;
+
+    for (const line of timelineLines) {
+	const match = line.match(pattern);
+	if (match) {
+	    const start = match[3];
+	    const end = match[4];
+	    const summary = match[5];
+	    const timeTracking = match[6];
+	    
+	    if (timeTracking) {
+		const key = `${start}-${summary}`;
+		timeTrackingMap.set(key, timeTracking.trim());
+	    }
+	}
     }
 
-    return timeline;
+    return timeTrackingMap;
+}
+
+// Helper function to generate event ID from EventData block
+function generateEventIdFromBlock(block: EventData): string {
+    return block.uid;
 }
 
 function generateSafeTimelineLines(
@@ -506,24 +1172,15 @@ function generateSafeTimelineLines(
     manualBlocks: EventData[],
     date: DateTime,
     previousTimelineLines: string[],
-    settings: TascalSettings
+    settings: TascalSettings,
+    jsonTimeTrackingData?: TimeTrackingData
 ): string[] {
     const timeline: string[] = [];
 
     const checkboxMap = extractCheckboxStateMap(previousTimelineLines);
+    const timeTrackingMap = extractTimeTrackingData(previousTimelineLines);
 
     const allBlocks = [...calendarEvents, ...manualBlocks];
-
-    //onst seen = new Set<string>();
-    //onst uniqueBlocks: EventData[] = [];
-    //
-    //or (const block of allBlocks) {
-    //   const key = `${block.uid}@${block.start.toISO()}`;
-    //   if (!seen.has(key)) {
-    //       uniqueBlocks.push(block);
-    //       seen.add(key);
-    //   }
-    //
 
     const seen = new Set<string>();
     const uniqueBlocks: EventData[] = [];
@@ -554,19 +1211,49 @@ function generateSafeTimelineLines(
     let elapsedMinutes = 0;
     let remainingMinutes = 0;
 
-    //const now = DateTime.now().setZone(settings.timezone);
-
     const eventLines: string[] = [];
 
     for (const block of uniqueBlocks) {
 	if (block.start > cursor) {
-            eventLines.push(`${cursor.toFormat("HH:mm")}–${block.start.toFormat("HH:mm")} available`);
+            eventLines.push(`- *${cursor.toFormat("HH:mm")}–${block.start.toFormat("HH:mm")} (free)*`);
 	}
 
 	const key = `${block.start.toFormat("HH:mm")}-${block.summary}`;
 	const checked = block.done === true || checkboxMap.get(key) === true ? "x" : " ";
+	
+	// Check if this event should have the tracking pointer
+	const shouldTrack = settings.currentTrackingEventId === generateEventIdFromBlock(block);
 
-	eventLines.push(`- [${checked}] ${block.start.toFormat("HH:mm")}–${block.end.toFormat("HH:mm")} ${block.summary}`);
+	// Get time tracking data from settings for this event using UID
+	const eventId = generateEventIdFromBlock(block);
+	const settingsTimeTracking = settings.timeTrackingData[eventId];
+	
+	// Also check timeline data for backward compatibility
+	const timeTracking = timeTrackingMap.get(key) || "";
+	
+	// Check JSON file data for this event (using summary as key)
+	const jsonTimeTracking = jsonTimeTrackingData?.[block.summary];
+	
+	// Merge time tracking data: use settings data if available, otherwise use timeline data, then JSON data
+	let finalTimeTracking = timeTracking;
+	if (settingsTimeTracking && settingsTimeTracking.length > 0) {
+	    const trackingEntries = settingsTimeTracking
+		.filter(entry => entry.duration !== "")
+		.map(entry => `${entry.start}::${entry.duration}`)
+		.join(", ");
+	    finalTimeTracking = trackingEntries;
+	} else if (jsonTimeTracking && jsonTimeTracking.length > 0) {
+	    const trackingEntries = jsonTimeTracking
+		.filter(entry => entry.duration !== "")
+		.map(entry => `${entry.start}::${entry.duration}`)
+		.join(", ");
+	    finalTimeTracking = trackingEntries;
+	}
+
+	// Preserve time tracking data if it exists
+	const trackingInfo = finalTimeTracking ? ` {TT: ${finalTimeTracking}}` : "";
+	const trackingSymbol = shouldTrack ? " >" : "";
+	eventLines.push(`- [${checked}]${trackingSymbol} ${block.start.toFormat("HH:mm")}–${block.end.toFormat("HH:mm")} ${block.summary}${trackingInfo}`);
 
 	if (block.end > cursor) {
             cursor = block.end;
@@ -587,7 +1274,7 @@ function generateSafeTimelineLines(
     }
 
     if (cursor < endOfDay) {
-        eventLines.push(`${cursor.toFormat("HH:mm")}–${endOfDay.toFormat("HH:mm")} available`);
+        eventLines.push(`- *${cursor.toFormat("HH:mm")}–${endOfDay.toFormat("HH:mm")} (free)*`);
     }
 
     // ✨ Build the stats line
@@ -596,25 +1283,23 @@ function generateSafeTimelineLines(
     const elapsedTimeStr = formatDuration(elapsedMinutes);
     const leftTimeStr = formatDuration(remainingMinutes);
 
-    const statsLine = `🕐 Total: ${totalTasks} | ✅ Completed: ${completedTasks} | ⏳ Elapsed: ${elapsedTimeStr} | 🏃 Left: ${leftTimeStr} | 📅 Total time: ${totalTimeStr}`;
-
-    return [statsLine, ...eventLines];
-}
-
-
-function replaceTimelineSection(note: string, newTimeline: string): string {
-    const lines = note.split("\n");
-    const startIndex = lines.findIndex((line) => line.trim() === "### Timeline");
-
-    if (startIndex === -1) {
-	return note + `\n\n${newTimeline}`;
+    // Calculate total tracked time from time tracking data
+    let totalTrackedMinutes = 0;
+    if (jsonTimeTrackingData) {
+        for (const [eventId, entries] of Object.entries(jsonTimeTrackingData)) {
+            for (const entry of entries) {
+                if (entry.duration && entry.duration !== "") {
+                    const [hours, minutes] = entry.duration.split(":").map(Number);
+                    totalTrackedMinutes += hours * 60 + minutes;
+                }
+            }
+        }
     }
+    const totalTrackedStr = formatDuration(totalTrackedMinutes);
 
-    const endIndex = lines.findIndex((line, i) => i > startIndex && line.startsWith("### "));
+    const statsLine = `**${completedTasks}/${totalTasks}** done | ${elapsedTimeStr}/${totalTimeStr} | **Total TT: ${totalTrackedStr}**`;
 
-    const before = lines.slice(0, startIndex);
-    const after = endIndex !== -1 ? lines.slice(endIndex) : [];
-    return [...before, newTimeline, ...after].join("\n");
+    return [statsLine, "", ...eventLines];
 }
 
 function updateTascalSection(
@@ -622,13 +1307,13 @@ function updateTascalSection(
     timelineLines: string[],
     manualBlockLines: string[]
 ): string {
-    const startTag = "<!--TASCAL-START-->";
-    const endTag = "<!--TASCAL-END-->";
+    const startTag = "<!--tascal-->";
+    const endTag = "<!--/tascal-->";
     const newSection =
         `${startTag}\n` +
         `### Timeline\n` +
         timelineLines.join("\n") +
-        `\n\n<!--TASCAL-MANUAL-BLOCKS-SECTION\n` +
+        `\n\n<!--manual\n` +
         manualBlockLines.join("\n") +
         `\n-->\n` +
         `${endTag}`;
@@ -676,7 +1361,7 @@ function parseManualBlocksFromLines(
 		continue;
 	    }
 
-	    blocks.push({ summary, start, end, uid: `manual-${start.toMillis()}` });
+	    blocks.push({ summary, start, end, uid: `manual-${date.toISODate()}-${summary.trim().replace(/[^a-zA-Z0-9]/g, '-')}` });
 
 	} else if ((match = line.match(startDurationRegex))) {
 	    const [_, startStr, durationStr, summary, rescheduleDate] = match;
@@ -689,33 +1374,14 @@ function parseManualBlocksFromLines(
 		continue;
 	    }
 
-	    blocks.push({ summary, start, end, uid: `manual-${start.toMillis()}` });
+	    blocks.push({ summary, start, end, uid: `manual-${date.toISODate()}-${summary.trim().replace(/[^a-zA-Z0-9]/g, '-')}` });
 	}
     }
 
     return { blocks, rescheduled };
 }
 
-function extractCheckboxStateMap(timelineLines: string[]): Map<string, boolean> {
-    const checkboxMap = new Map<string, boolean>();
-    const pattern = /^- \[( |x)] (\d{1,2}:\d{2})–(\d{1,2}:\d{2}) (.+)$/;
-
-    for (const line of timelineLines) {
-	const match = line.match(pattern);
-	if (match) {
-	    const checked = match[1] === "x";
-	    const start = match[2];
-	    const end = match[3];
-	    const summary = match[4];
-	    const key = `${start}-${summary}`;
-	    checkboxMap.set(key, checked);
-	}
-    }
-
-    return checkboxMap;
-}
-
-async function writeCalendarCache(date: DateTime, events: EventData[]) {
+async function writeCalendarCache(app: App, date: DateTime, events: EventData[]) {
     const filePath = `.tascal/${date.toISODate()}.json`;
     const folderPath = `.tascal`;
     const adapter = app.vault.adapter;
@@ -736,7 +1402,7 @@ async function writeCalendarCache(date: DateTime, events: EventData[]) {
     await adapter.write(filePath, JSON.stringify(serializable, null, 2));
 }
 
-async function readCalendarCache(date: DateTime): Promise<EventData[] | null> {
+async function readCalendarCache(app: App, date: DateTime): Promise<EventData[] | null> {
     const filePath = `.tascal/${date.toISODate()}.json`;
     const adapter = app.vault.adapter;
 
@@ -791,7 +1457,7 @@ function formatTime(time: string): string {
     return `${hour}:00`;
 }
 
-async function appendRescheduledTask(globalPath: string, targetDate: string, originalDate: string, line: string) {
+async function appendRescheduledTask(app: App, globalPath: string, targetDate: string, originalDate: string, line: string) {
     const filePath = `${globalPath}/rescheduled.md`;
     const adapter = app.vault.adapter;
 
@@ -811,22 +1477,8 @@ async function appendRescheduledTask(globalPath: string, targetDate: string, ori
     }
 }
 
-async function loadRescheduledLinesForDate(
-    folder: string,
-    targetDate: string
-): Promise<string[]> {
-    const filePath = `${folder}/rescheduled.md`;
-    const adapter = app.vault.adapter;
-    if (!(await adapter.exists(filePath))) return [];
-
-    const text = await adapter.read(filePath);
-    return text
-        .split("\n")
-        .filter(line => line.includes(`@${targetDate}`))
-        .map(line => line.replace(/^@[^\s]+\s+from\s+[^\s]+:\s*/, "").trim());
-}
-
 async function loadRescheduledTasks(
+    app: App,
     folder: string,
     targetDate: string,
     timezone: string,
@@ -835,7 +1487,7 @@ async function loadRescheduledTasks(
     const filePath = `${folder}/rescheduled.md`;
     const adapter = app.vault.adapter;
     const blocks: string[] = [];
-
+    
     if (!(await adapter.exists(filePath))) return [];
 
     const text = await adapter.read(filePath);
@@ -856,211 +1508,142 @@ async function loadRescheduledTasks(
             continue;
         }
 
-        if (matchRange) {
-            const [_, reschedDate, fromDate, startStr, endStr, summaryRaw] = matchRange;
-            if (reschedDate !== targetDate) {
-                updatedLines.push(line);
-                continue;
-            }
+	if (matchRange) {
+	    const [_, reschedDate, fromDate, startStr, endStr, summaryRaw] = matchRange;
+	    if (reschedDate !== targetDate) {
+		updatedLines.push(line);
+		continue;
+	    }
 
             const summary = summaryRaw
                 .replace(/\[[^\]]+\]/, "") // Remove recurring markers
                 .replace(/@\d{4}-\d{2}-\d{2}/, "") // Remove @YYYY-MM-DD
                 .trim();
             blocks.push(`@${startStr}–${endStr} ${summary} [rs:${fromDate}]`);
-            updatedLines.push(`%%processed%% ${line}`);
-            continue;
-        }
+	    updatedLines.push(`%%processed%% ${line}`);
+	    continue;
+	}
 
-        if (matchDuration) {
-            const [_, reschedDate, fromDate, startStr, durationStr, summaryRaw] = matchDuration;
-            if (reschedDate !== targetDate) {
-                updatedLines.push(line);
-                continue;
-            }
+	if (matchDuration) {
+	    const [_, reschedDate, fromDate, startStr, durationStr, summaryRaw] = matchDuration;
+	    if (reschedDate !== targetDate) {
+		updatedLines.push(line);
+		continue;
+	    }
 
             const summary = summaryRaw
                 .replace(/\[[^\]]+\]/, "") // Remove recurring markers
                 .replace(/@\d{4}-\d{2}-\d{2}/, "") // Remove @YYYY-MM-DD
                 .trim();
             blocks.push(`@${startStr} (${durationStr}) ${summary} [rs:${fromDate}]`);
-            updatedLines.push(`%%processed%% ${line}`);
-            continue;
-        }
+	    updatedLines.push(`%%processed%% ${line}`);
+	    continue;
+	}
     }
 
     await adapter.write(filePath, updatedLines.join("\n") + "\n");
     return blocks;
 }
 
-function shouldInsertRecurring(line: string, targetDate: DateTime): boolean {
-    const repeatRegex = /\[(w|m):([^\]]+)\]/;
-    const addedRegex = /<!--\s*added:(\d{4}-\d{2}-\d{2})\s*-->/;
-
-    const repeatMatch = line.match(repeatRegex);
-    if (!repeatMatch) return false;
-
-    const [_, type, rule] = repeatMatch;
-
-    const alreadyAdded = line.includes(`<!-- added:${targetDate.toISODate()} -->`);
-    if (alreadyAdded) return false;
-
-    if (type === "w") {
-        const dayMap: Record<string, number> = {
-            Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7
-        };
-        const days = rule.split(",").map(d => dayMap[d.trim()]);
-        return days.includes(targetDate.weekday);
-    }
-
-    if (type === "m") {
-        const dayOffset = parseInt(rule);
-        const lastDay = targetDate.endOf("month").day;
-        const matchDay = dayOffset < 0 ? lastDay + 1 + dayOffset : dayOffset;
-        return targetDate.day === matchDay;
-    }
-
-    return false;
-}
-
-async function loadRecurringTasks(recurringPath: string, date: DateTime): Promise<string[]> {
-    const adapter = app.vault.adapter;
+async function loadRecurringTasks(app: App, recurringEvents: string[], date: DateTime, plugin?: any): Promise<string[]> {
     const result: string[] = [];
+    const adapter = app.vault.adapter;
+    const recurringFilePath = ".tascal/recurring.md";
+    
+    // Load existing markers from file
+    let existingMarkers: Record<string, string[]> = {};
+    if (await adapter.exists(recurringFilePath)) {
+        try {
+            const content = await adapter.read(recurringFilePath);
+            const lines = content.split("\n").filter(line => line.trim());
+            
+            for (const line of lines) {
+                const markerMatch = line.match(/^(.+?)\s*<!--\s*added:(\d{4}-\d{2}-\d{2})\s*-->$/);
+                if (markerMatch) {
+                    const [_, eventKey, dateStr] = markerMatch;
+                    if (!existingMarkers[eventKey]) {
+                        existingMarkers[eventKey] = [];
+                    }
+                    existingMarkers[eventKey].push(dateStr);
+                }
+            }
+        } catch (error) {
+            console.error("Error loading recurring markers:", error);
+        }
+    }
 
-    if (!(await adapter.exists(recurringPath))) return result;
+    const updatedMarkers: string[] = [];
 
-    const lines = (await adapter.read(recurringPath)).split("\n");
-    const updatedLines: string[] = [];
-
-    for (let line of lines) {
+    for (let line of recurringEvents) {
         const repeatMatch = line.match(/\[(w|m):([^\]]+)\]/);
-        const addedMatch = line.match(/<!-- added:(\d{4}-\d{2}-\d{2}) -->/g);
-        const alreadyAdded = addedMatch?.some(m => m.includes(date.toISODate())) ?? false;
+        const dateStr = date.toISODate();
+        
+        // Check if this event has already been added for this date
+        const eventKey = line.replace(/\s*\[(rc:[wm]|[wm]:[^\]]+)\]$/, "").trim();
+        const alreadyAdded = dateStr ? existingMarkers[eventKey]?.includes(dateStr) || false : false;
 
         if (!repeatMatch) {
-            updatedLines.push(line);
             continue;
         }
 
         const [_, type, rule] = repeatMatch;
 
         if (alreadyAdded) {
-            updatedLines.push(line);
             continue;
         }
 
         let shouldAdd = false;
 
         if (type === "w") {
-            const days = rule.split(",").map(d => d.trim());
+            const days = rule.split(",").map((d: string) => d.trim());
             if (days.includes(date.toFormat("ccc"))) shouldAdd = true;
         }
 
         if (type === "m") {
             const day = parseInt(rule);
-            const lastDay = date.endOf("month").day;
-            const targetDay = day > 0 ? day : lastDay + 1 + day;
-            if (date.day === targetDay) shouldAdd = true;
+                const lastDay = date.endOf("month").day;
+                const targetDay = day > 0 ? day : lastDay + 1 + day;
+                if (date.day === targetDay) shouldAdd = true;
         }
 
         if (shouldAdd) {
-            // add to result
-            const taskLine = line.replace(/\[[^\]]+\]/, "").replace(/\s*<!--.*$/, "").trim();
+            // Remove only the last [m:19] or [rc:m] marker, keep [[...]] links
+            let taskLine = line.replace(/\s*<!--.*$/, "").trim();
+            // Remove the last [rc:w], [rc:m], [m:19], [w:Mon,Wed] etc. marker
+            taskLine = taskLine.replace(/\s*\[(rc:[wm]|[wm]:[^\]]+)\]$/, "");
             // Add source indicator based on type
             const sourceIndicator = type === "w" ? "[rc:w]" : "[rc:m]";
-            result.push(`${taskLine} ${sourceIndicator}`);
+            result.push(`${taskLine} ${sourceIndicator}`.trim());
 
-            // append marker to the line
-            line += ` <!-- added:${date.toISODate()} -->`;
+            // Add marker to the list
+            updatedMarkers.push(`${eventKey} <!-- added:${dateStr} -->`);
         }
-
-        updatedLines.push(line);
     }
 
-    // overwrite the recurring file with updated markers
-    await adapter.write(recurringPath, updatedLines.join("\n"));
+    // Save updated markers to file
+    if (updatedMarkers.length > 0) {
+        const folderPath = ".tascal";
+        if (!(await adapter.exists(folderPath))) {
+            await adapter.mkdir(folderPath);
+        }
+        
+        // Read existing content and append new markers
+        let existingContent = "";
+        if (await adapter.exists(recurringFilePath)) {
+            existingContent = await adapter.read(recurringFilePath);
+        }
+        
+        const newContent = existingContent + "\n" + updatedMarkers.join("\n");
+        await adapter.write(recurringFilePath, newContent.trim() + "\n");
+    }
 
     return result;
 }
 
-class IcsSettingTab extends PluginSettingTab {
-    plugin: IcsImporterPlugin;
-
-    constructor(app: App, plugin: IcsImporterPlugin) {
-	super(app, plugin);
-	this.plugin = plugin;
-    }
-
-    display(): void {
-	const { containerEl } = this;
-
-	containerEl.empty();
-	containerEl.createEl("h3", { text: "Calendars" });
-
-	this.plugin.settings.calendars.forEach((cal, index) => {
-	    new Setting(containerEl)
-		.setName(`Calendar ${index + 1}`)
-		.addText((text) =>
-		    text
-			.setPlaceholder("calendar name")
-			.setValue(cal.id)
-			.onChange(async (value) => {
-			    this.plugin.settings.calendars[index].id = value;
-			    await this.plugin.saveSettings();
-			})
-			)
-		.addText((text) =>
-		    text
-			.setPlaceholder("https://...")
-			.setValue(cal.url)
-			.onChange(async (value) => {
-			    this.plugin.settings.calendars[index].url = value;
-			    await this.plugin.saveSettings();
-			})
-			)
-		.addExtraButton((btn) =>
-		    btn
-			.setIcon("trash")
-			.setTooltip("Remove")
-			.onClick(async () => {
-			    this.plugin.settings.calendars.splice(index, 1);
-			    await this.plugin.saveSettings();
-			    this.display();
-			})
-			       );
-	});
-
-	new Setting(containerEl)
-	    .addButton((btn) =>
-		btn
-		    .setButtonText("+ Add Calendar")
-		    .setCta()
-		    .onClick(async () => {
-			this.plugin.settings.calendars.push({ id: "", url: "" });
-			await this.plugin.saveSettings();
-			this.display();
-		    })
-		      );
-
-	new Setting(containerEl)
-	    .setName('Timezone')
-	    .setDesc('Time zone for event formatting (e.g. Europe/Warsaw)')
-	    .addText(text =>
-		text
-		    .setPlaceholder('UTC')
-		    .setValue(this.plugin.settings.timezone)
-		    .onChange(async (value) => {
-			this.plugin.settings.timezone = value;
-			await this.plugin.saveSettings();
-		    })
-		    );
-    }
-}
-
 class TascalSettingTab extends PluginSettingTab {
-    plugin: IcsImporterPlugin;
+    plugin: TascalPlugin;
 
-    constructor(app: App, plugin: IcsImporterPlugin) {
+    constructor(app: App, plugin: TascalPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
@@ -1186,29 +1769,155 @@ class TascalSettingTab extends PluginSettingTab {
                         }));
         });
 	
-	new Setting(containerEl)
-	    .setName("Rescheduled folder")
-	    .setDesc("Path to store rescheduled tasks")
-	    .addText(text =>
-		text.setPlaceholder("tascal/rescheduled")
-		    .setValue(this.plugin.settings.rescheduledFolder)
-		    .onChange(async (value) => {
-			this.plugin.settings.rescheduledFolder = value;
-			await this.plugin.saveSettings();
-		    }));
 
-	new Setting(containerEl)
-	    .setName("Recurring file path")
-	    .setDesc("Path to the recurring tasks definition file")
-	    .addText(text =>
-		text.setPlaceholder("tascal/recurring")
-		    .setValue(this.plugin.settings.recurringFilePath)
-		    .onChange(async (value) => {
-			this.plugin.settings.recurringFilePath = value;
-			await this.plugin.saveSettings();
-		    }));
+
+
+
+	// ===== Recurring Events =====
+	containerEl.createEl("h3", { text: "Recurring Events" });
+
+	const recurringContainer = containerEl.createEl("div", { cls: "recurring-events-container" });
+	
+	// Add description
+	recurringContainer.createEl("p", { 
+	    text: "Define recurring events here. Use [w:Mon,Wed] for weekly or [m:15] for monthly recurrence.",
+	    cls: "setting-item-description"
+	});
+
+	// Container for individual event inputs
+	const eventsContainer = recurringContainer.createEl("div", { cls: "recurring-events-list" });
+
+	// Function to create a new event input
+	const createEventInput = (value: string = "", index?: number) => {
+	    const eventDiv = eventsContainer.createEl("div", { cls: "recurring-event-item" });
+	    
+	    const input = eventDiv.createEl("input", {
+		type: "text",
+		cls: "recurring-event-input",
+		attr: {
+		    placeholder: "@09:00 (1h) Daily standup [w:Mon,Tue,Wed,Thu,Fri]"
+		}
+	    });
+	    
+	    input.value = value;
+	    
+	    // Handle input changes
+	    input.addEventListener("input", async (evt) => {
+		const target = evt.target as HTMLInputElement;
+		const currentEvents = [...this.plugin.settings.recurringEvents];
+		const inputIndex = Array.from(eventsContainer.children).indexOf(eventDiv);
+		currentEvents[inputIndex] = target.value;
+		this.plugin.settings.recurringEvents = currentEvents.filter(event => event.trim());
+		await this.plugin.saveSettings();
+	    });
+	    
+	    // Add remove button
+	    const removeBtn = eventDiv.createEl("button", {
+		text: "×",
+		cls: "remove-event-btn"
+	    });
+	    
+	    removeBtn.addEventListener("click", async () => {
+		const currentEvents = [...this.plugin.settings.recurringEvents];
+		const inputIndex = Array.from(eventsContainer.children).indexOf(eventDiv);
+		currentEvents.splice(inputIndex, 1);
+		this.plugin.settings.recurringEvents = currentEvents;
+		await this.plugin.saveSettings();
+		eventDiv.remove();
+	    });
+	    
+	    return eventDiv;
+	};
+
+	// Add existing events
+	this.plugin.settings.recurringEvents.forEach(event => {
+	    createEventInput(event);
+	});
+
+	// Add + button to create new events
+	const addButton = recurringContainer.createEl("button", {
+	    text: "+ Add Recurring Event",
+	    cls: "add-recurring-event-btn"
+	});
+	
+	addButton.addEventListener("click", async () => {
+	    createEventInput();
+	    this.plugin.settings.recurringEvents.push("");
+	    await this.plugin.saveSettings();
+	});
 
     }
+}
+
+async function saveTimeTrackingData(app: App, filePath: string, timeTrackingData: TimeTrackingData) {
+    const adapter = app.vault.adapter;
+    const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
+
+    if (!(await adapter.exists(folderPath))) {
+        await adapter.mkdir(folderPath);
+    }
+
+    await adapter.write(filePath, JSON.stringify(timeTrackingData, null, 2));
+}
+
+async function loadTimeTrackingData(app: App, filePath: string): Promise<TimeTrackingData> {
+    const adapter = app.vault.adapter;
+
+    if (!(await adapter.exists(filePath))) {
+        return {};
+    }
+
+    try {
+        const text = await adapter.read(filePath);
+        return JSON.parse(text);
+    } catch (error) {
+        console.error("Error loading time tracking data:", error);
+        return {};
+    }
+}
+
+function extractTimeTrackingFromTimeline(timelineLines: string[]): TimeTrackingData {
+    const timeTrackingData: TimeTrackingData = {};
+    const pattern = /^- \[( |x)]\s*(>?\s*)(\d{1,2}:\d{2})–(\d{1,2}:\d{2}) (.+?)(?:\s*\{TT:([^}]*)\})?$/;
+
+    for (const line of timelineLines) {
+	const match = line.match(pattern);
+	if (match) {
+	    const summary = match[5].trim();
+	    const timeTracking = match[6];
+	    if (timeTracking) {
+		const eventId = summary;
+		const entries = timeTracking.split(',').map((e: string) => {
+		    const [startTime, duration] = e.trim().split('::');
+		    return { start: startTime.trim(), duration: duration.trim() };
+		});
+		timeTrackingData[eventId] = entries;
+	    }
+	}
+    }
+    return timeTrackingData;
+}
+
+// Helper function to migrate time tracking data from time-based IDs to summary-only keys
+function migrateTimeTrackingData(
+    timeTrackingData: TimeTrackingData,
+    calendarEvents: EventData[],
+    manualBlocks: EventData[],
+    dateStr: string
+): TimeTrackingData {
+    const migratedData: TimeTrackingData = {};
+    for (const [oldId, entries] of Object.entries(timeTrackingData)) {
+        // Try to parse the old ID and extract the summary
+        const match = oldId.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})-(.+)$/);
+        if (match) {
+            const summary = match[3].trim();
+            migratedData[summary] = entries;
+        } else {
+            // If it's already a summary, keep as is
+            migratedData[oldId] = entries;
+        }
+    }
+    return migratedData;
 }
 
 
