@@ -1,5 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { TascalSettings } from "./types";
+import { TascalSettings, EventTemplate, RecurringRule } from "./types";
 
 export interface TascalPluginInterface extends Plugin {
     settings: TascalSettings;
@@ -135,78 +135,289 @@ export class TascalSettingTab extends PluginSettingTab {
                         }));
         });
 
-	// ===== Recurring Events =====
+	// ===== Recurring Rules =====
 	containerEl.createEl("h3", { text: "Recurring Events" });
 
-	const recurringContainer = containerEl.createEl("div", { cls: "recurring-events-container" });
+	const rules = this.plugin.settings.recurringRules || [];
 
-	// Add description
-	recurringContainer.createEl("p", {
-	    text: "Define recurring events here. Use [w:Mon,Wed] for weekly or [m:15] for monthly recurrence.",
+	rules.forEach((rule, index) => {
+	    const ruleContainer = containerEl.createEl("div", { cls: "tascal-template-card" });
+
+	    ruleContainer.createEl("h4", {
+		text: rule.summary || `Rule ${index + 1}`,
+		cls: "tascal-template-title"
+	    });
+
+	    new Setting(ruleContainer)
+		.setName("Summary")
+		.addText(text => text
+		    .setPlaceholder("Daily standup")
+		    .setValue(rule.summary)
+		    .onChange(async (v) => {
+			this.plugin.settings.recurringRules[index].summary = v;
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(ruleContainer)
+		.setName("Start time")
+		.addText(text => text
+		    .setPlaceholder("09:00")
+		    .setValue(rule.start)
+		    .onChange(async (v) => {
+			this.plugin.settings.recurringRules[index].start = v;
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(ruleContainer)
+		.setName("Duration (minutes)")
+		.addText(text => text
+		    .setPlaceholder("60")
+		    .setValue(String(rule.duration || ""))
+		    .onChange(async (v) => {
+			this.plugin.settings.recurringRules[index].duration = parseInt(v) || 0;
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(ruleContainer)
+		.setName("Recurrence type")
+		.addDropdown(dd => {
+		    dd.addOption("weekly", "Weekly");
+		    dd.addOption("monthly", "Monthly");
+		    dd.setValue(rule.recurrence.type);
+		    dd.onChange(async (v) => {
+			if (v === "weekly") {
+			    this.plugin.settings.recurringRules[index].recurrence = { type: "weekly", days: [] };
+			} else {
+			    this.plugin.settings.recurringRules[index].recurrence = { type: "monthly", day: 1 };
+			}
+			await this.plugin.saveSettings();
+			this.display();
+		    });
+		});
+
+	    if (rule.recurrence.type === "weekly") {
+		const daysContainer = ruleContainer.createEl("div", { cls: "tascal-days-checkboxes" });
+		daysContainer.createEl("label", { text: "Days:", cls: "tascal-label" });
+		const daysRow = daysContainer.createEl("div", { cls: "tascal-days-row" });
+
+		for (const day of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) {
+		    const label = daysRow.createEl("label", { cls: "tascal-day-checkbox" });
+		    const checkbox = label.createEl("input", { type: "checkbox" });
+		    checkbox.checked = rule.recurrence.days.includes(day);
+		    label.appendText(day);
+		    checkbox.addEventListener("change", async () => {
+			const rec = this.plugin.settings.recurringRules[index].recurrence;
+			if (rec.type === "weekly") {
+			    if (checkbox.checked) {
+				rec.days.push(day);
+			    } else {
+				rec.days = rec.days.filter(d => d !== day);
+			    }
+			}
+			await this.plugin.saveSettings();
+		    });
+		}
+	    } else {
+		new Setting(ruleContainer)
+		    .setName("Day of month")
+		    .setDesc("Use negative values for end-of-month (e.g. -1 = last day)")
+		    .addText(text => text
+			.setPlaceholder("15")
+			.setValue(String(rule.recurrence.day))
+			.onChange(async (v) => {
+			    const rec = this.plugin.settings.recurringRules[index].recurrence;
+			    if (rec.type === "monthly") {
+				rec.day = parseInt(v) || 1;
+			    }
+			    await this.plugin.saveSettings();
+			}));
+	    }
+
+	    new Setting(ruleContainer)
+		.setName("Exceptions")
+		.setDesc("ISO dates to skip (one per line)")
+		.addTextArea(text => text
+		    .setPlaceholder("2026-01-01\n2026-12-25")
+		    .setValue((rule.exceptions || []).join("\n"))
+		    .onChange(async (v) => {
+			this.plugin.settings.recurringRules[index].exceptions =
+			    v.split("\n").map(d => d.trim()).filter(d => d);
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(ruleContainer)
+		.addButton(btn => btn
+		    .setButtonText("Remove Rule")
+		    .setWarning()
+		    .onClick(async () => {
+			this.plugin.settings.recurringRules.splice(index, 1);
+			await this.plugin.saveSettings();
+			this.display();
+		    }));
+	});
+
+	new Setting(containerEl)
+	    .addButton(btn => btn
+		.setButtonText("+ Add Recurring Rule")
+		.setCta()
+		.onClick(async () => {
+		    if (!this.plugin.settings.recurringRules) {
+			this.plugin.settings.recurringRules = [];
+		    }
+		    this.plugin.settings.recurringRules.push({
+			id: crypto.randomUUID(),
+			summary: "",
+			start: "09:00",
+			duration: 60,
+			recurrence: { type: "weekly", days: [] },
+		    });
+		    await this.plugin.saveSettings();
+		    this.display();
+		}));
+
+	// Legacy recurring events (read-only, for reference)
+	if (this.plugin.settings.recurringEvents.length > 0) {
+	    containerEl.createEl("h4", { text: "Legacy Recurring Events (migrated)" });
+	    containerEl.createEl("p", {
+		text: "These have been migrated to structured rules above. They are kept for backward compatibility.",
+		cls: "setting-item-description"
+	    });
+	    for (const ev of this.plugin.settings.recurringEvents) {
+		containerEl.createEl("code", { text: ev, cls: "tascal-legacy-rule" });
+	    }
+	}
+
+	// ===== Event Templates =====
+	containerEl.createEl("h3", { text: "Event Templates" });
+
+	containerEl.createEl("p", {
+	    text: "Define templates for frequently created events. Use {{date}}, {{date:yyyy-MM}}, {{weekday}} in patterns.",
 	    cls: "setting-item-description"
 	});
 
-	// Container for individual event inputs
-	const eventsContainer = recurringContainer.createEl("div", { cls: "recurring-events-list" });
+	const templates = this.plugin.settings.eventTemplates || [];
 
-	// Function to create a new event input
-	const createEventInput = (value: string = "", index?: number) => {
-	    const eventDiv = eventsContainer.createEl("div", { cls: "recurring-event-item" });
+	templates.forEach((tmpl, index) => {
+	    const tmplContainer = containerEl.createEl("div", { cls: "tascal-template-card" });
 
-	    const input = eventDiv.createEl("input", {
-		type: "text",
-		cls: "recurring-event-input",
-		attr: {
-		    placeholder: "@09:00 (1h) Daily standup [w:Mon,Tue,Wed,Thu,Fri]"
-		}
+	    tmplContainer.createEl("h4", {
+		text: tmpl.label || `Template ${index + 1}`,
+		cls: "tascal-template-title"
 	    });
 
-	    input.value = value;
+	    new Setting(tmplContainer)
+		.setName("Shortcode")
+		.setDesc("Quick-add trigger (e.g. \"gym\")")
+		.addText(text => text
+		    .setPlaceholder("gym")
+		    .setValue(tmpl.shortcode)
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].shortcode = v;
+			await this.plugin.saveSettings();
+		    }));
 
-	    // Handle input changes
-	    input.addEventListener("input", async (evt) => {
-		const target = evt.target as HTMLInputElement;
-		const currentEvents = [...this.plugin.settings.recurringEvents];
-		const inputIndex = Array.from(eventsContainer.children).indexOf(eventDiv);
-		currentEvents[inputIndex] = target.value;
-		this.plugin.settings.recurringEvents = currentEvents.filter(event => event.trim());
-		await this.plugin.saveSettings();
-	    });
+	    new Setting(tmplContainer)
+		.setName("Label")
+		.setDesc("Display name")
+		.addText(text => text
+		    .setPlaceholder("Gym Session")
+		    .setValue(tmpl.label)
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].label = v;
+			await this.plugin.saveSettings();
+		    }));
 
-	    // Add remove button
-	    const removeBtn = eventDiv.createEl("button", {
-		text: "×",
-		cls: "remove-event-btn"
-	    });
+	    new Setting(tmplContainer)
+		.setName("Note name pattern")
+		.setDesc("{{date}}, {{date:yyyy-MM}}, {{weekday}} supported")
+		.addText(text => text
+		    .setPlaceholder("{{date}} Gym")
+		    .setValue(tmpl.namePattern)
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].namePattern = v;
+			await this.plugin.saveSettings();
+		    }));
 
-	    removeBtn.addEventListener("click", async () => {
-		const currentEvents = [...this.plugin.settings.recurringEvents];
-		const inputIndex = Array.from(eventsContainer.children).indexOf(eventDiv);
-		currentEvents.splice(inputIndex, 1);
-		this.plugin.settings.recurringEvents = currentEvents;
-		await this.plugin.saveSettings();
-		eventDiv.remove();
-	    });
+	    new Setting(tmplContainer)
+		.setName("Folder")
+		.setDesc("Vault path with {{date:...}} support")
+		.addText(text => text
+		    .setPlaceholder("notes/gym/{{date:yyyy-MM}}")
+		    .setValue(tmpl.folder || "")
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].folder = v || undefined;
+			await this.plugin.saveSettings();
+		    }));
 
-	    return eventDiv;
-	};
+	    new Setting(tmplContainer)
+		.setName("Note template")
+		.setDesc("Vault path to a template file")
+		.addText(text => text
+		    .setPlaceholder("templates/gym.md")
+		    .setValue(tmpl.noteTemplate || "")
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].noteTemplate = v || undefined;
+			await this.plugin.saveSettings();
+		    }));
 
-	// Add existing events
-	this.plugin.settings.recurringEvents.forEach(event => {
-	    createEventInput(event);
+	    new Setting(tmplContainer)
+		.setName("Default start")
+		.addText(text => text
+		    .setPlaceholder("09:00")
+		    .setValue(tmpl.defaultStart || "")
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].defaultStart = v || undefined;
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(tmplContainer)
+		.setName("Default duration (minutes)")
+		.addText(text => text
+		    .setPlaceholder("60")
+		    .setValue(tmpl.defaultDuration ? String(tmpl.defaultDuration) : "")
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].defaultDuration = v ? parseInt(v) : undefined;
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(tmplContainer)
+		.setName("Create linked note")
+		.addToggle(toggle => toggle
+		    .setValue(tmpl.createNote || false)
+		    .onChange(async (v) => {
+			this.plugin.settings.eventTemplates[index].createNote = v;
+			await this.plugin.saveSettings();
+		    }));
+
+	    new Setting(tmplContainer)
+		.addButton(btn => btn
+		    .setButtonText("Remove Template")
+		    .setWarning()
+		    .onClick(async () => {
+			this.plugin.settings.eventTemplates.splice(index, 1);
+			await this.plugin.saveSettings();
+			this.display();
+		    }));
 	});
 
-	// Add + button to create new events
-	const addButton = recurringContainer.createEl("button", {
-	    text: "+ Add Recurring Event",
-	    cls: "add-recurring-event-btn"
-	});
-
-	addButton.addEventListener("click", async () => {
-	    createEventInput();
-	    this.plugin.settings.recurringEvents.push("");
-	    await this.plugin.saveSettings();
-	});
+	new Setting(containerEl)
+	    .addButton(btn => btn
+		.setButtonText("+ Add Template")
+		.setCta()
+		.onClick(async () => {
+		    if (!this.plugin.settings.eventTemplates) {
+			this.plugin.settings.eventTemplates = [];
+		    }
+		    this.plugin.settings.eventTemplates.push({
+			id: crypto.randomUUID(),
+			shortcode: "",
+			label: "",
+			namePattern: "{{date}} ",
+			createNote: false,
+		    });
+		    await this.plugin.saveSettings();
+		    this.display();
+		}));
 
     }
 }

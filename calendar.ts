@@ -1,4 +1,3 @@
-import { App } from "obsidian";
 import ICAL from "ical.js";
 import { DateTime } from "luxon";
 import { EventData } from "./types";
@@ -109,43 +108,4 @@ export function extractEventsForDate(
     }
 
     return events;
-}
-
-export async function writeCalendarCache(app: App, date: DateTime, events: EventData[]) {
-    const filePath = `.tascal/${date.toISODate()}.json`;
-    const folderPath = `.tascal`;
-    const adapter = app.vault.adapter;
-
-    if (!(await adapter.exists(folderPath))) {
-	await adapter.mkdir(folderPath);
-    }
-
-    const serializable = events.map(ev => ({
-	summary: ev.summary,
-	start: ev.start.toISO(),
-	end: ev.end.toISO(),
-	uid: ev.uid,
-	source: ev.source ?? "calendar",
-	done: ev.done ?? false,
-    }));
-
-    await adapter.write(filePath, JSON.stringify(serializable, null, 2));
-}
-
-export async function readCalendarCache(app: App, date: DateTime): Promise<EventData[] | null> {
-    const filePath = `.tascal/${date.toISODate()}.json`;
-    const adapter = app.vault.adapter;
-
-    if (!(await adapter.exists(filePath))) return null;
-
-    const text = await adapter.read(filePath);
-    const raw = JSON.parse(text);
-    return raw.map((item: any) => ({
-	summary: item.summary,
-	start: DateTime.fromISO(item.start),
-	end: DateTime.fromISO(item.end),
-	uid: item.uid,
-	done: item.done ?? false,
-	source: item.source ?? "calendar",
-    }));
 }

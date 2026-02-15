@@ -207,6 +207,20 @@ export class AddEventModal extends Modal {
 	    cls: "mod-cta"
 	});
 	submitBtn.addEventListener("click", () => {
+	    // Try quick-add input first
+	    const quickVal = quickInput.value.trim();
+	    if (quickVal) {
+		const result = this.parseQuickAdd(quickVal);
+		if (result) {
+		    this.onSubmit(result);
+		    this.close();
+		    return;
+		}
+		new Notice("Could not parse quick add. Use: @HH:MM (duration) Summary");
+		return;
+	    }
+
+	    // Fall back to form fields
 	    if (!summary.trim()) {
 		new Notice("Summary is required.");
 		return;
@@ -466,6 +480,96 @@ export class RescheduleModal extends Modal {
 
 	const cancelBtn = btnContainer.createEl("button", {
 	    text: "Cancel",
+	    cls: "cancel-button"
+	});
+	cancelBtn.addEventListener("click", () => this.close());
+    }
+
+    onClose() {
+	this.contentEl.empty();
+    }
+}
+
+// ===== Rescheduled Events Modal =====
+
+export interface RescheduledEventEntry {
+    event: StoredEvent;
+    targetDate: string; // the date this event is scheduled on
+}
+
+export class RescheduledEventsModal extends Modal {
+    private entries: RescheduledEventEntry[];
+    private onReschedule: (entry: RescheduledEventEntry) => void;
+    private onDelete: (entry: RescheduledEventEntry) => void;
+
+    constructor(
+	app: App,
+	entries: RescheduledEventEntry[],
+	onReschedule: (entry: RescheduledEventEntry) => void,
+	onDelete: (entry: RescheduledEventEntry) => void
+    ) {
+	super(app);
+	this.entries = entries;
+	this.onReschedule = onReschedule;
+	this.onDelete = onDelete;
+    }
+
+    onOpen() {
+	const { contentEl } = this;
+	contentEl.empty();
+
+	contentEl.createEl("h2", { text: "Rescheduled Events" });
+
+	const container = contentEl.createEl("div", { cls: "event-selection-container" });
+
+	if (this.entries.length === 0) {
+	    container.createEl("p", {
+		text: "No pending rescheduled events.",
+		cls: "no-events-message"
+	    });
+	} else {
+	    // Sort by target date, then start time
+	    const sorted = [...this.entries].sort((a, b) =>
+		a.targetDate.localeCompare(b.targetDate) || a.event.start.localeCompare(b.event.start)
+	    );
+
+	    for (const entry of sorted) {
+		const eventDiv = container.createEl("div", { cls: "event-option" });
+
+		const dateDiv = eventDiv.createEl("div", { cls: "event-date" });
+		dateDiv.setText(entry.targetDate);
+
+		const timeDiv = eventDiv.createEl("div", { cls: "event-time" });
+		timeDiv.setText(`${entry.event.start}–${entry.event.end}`);
+
+		const summaryDiv = eventDiv.createEl("div", { cls: "event-summary" });
+		const originLabel = entry.event.sourceRef ? ` (from ${entry.event.sourceRef})` : "";
+		summaryDiv.setText(`${entry.event.summary}${originLabel}`);
+
+		const btnGroup = eventDiv.createEl("div", { cls: "event-actions" });
+
+		const rescheduleBtn = btnGroup.createEl("button", {
+		    text: "Reschedule",
+		    cls: "track-button"
+		});
+		rescheduleBtn.addEventListener("click", () => {
+		    this.onReschedule(entry);
+		    this.close();
+		});
+
+		const deleteBtn = btnGroup.createEl("button", {
+		    text: "Delete",
+		    cls: "tascal-delete-btn"
+		});
+		deleteBtn.addEventListener("click", () => {
+		    this.onDelete(entry);
+		    this.close();
+		});
+	    }
+	}
+
+	const cancelBtn = contentEl.createEl("button", {
+	    text: "Close",
 	    cls: "cancel-button"
 	});
 	cancelBtn.addEventListener("click", () => this.close());

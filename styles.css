@@ -213,3 +213,142 @@ If your plugin does not need CSS, delete this file.
     margin-bottom: 10px;
     line-height: 1.4;
 }
+
+/* ===== Tascal Modal Styles ===== */
+
+.tascal-modal {
+    max-width: 500px;
+}
+
+.tascal-modal h2 {
+    margin-bottom: 12px;
+}
+
+.tascal-label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.tascal-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+.tascal-input:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.2);
+}
+
+.tascal-quick-add {
+    margin-bottom: 16px;
+}
+
+.tascal-quick-add-full {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    margin-top: 12px;
+}
+
+.tascal-divider {
+    border: none;
+    border-top: 1px solid var(--background-modifier-border);
+    margin: 16px 0;
+}
+
+.tascal-btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    justify-content: flex-end;
+}
+
+.tascal-btn-row .cancel-button {
+    width: auto;
+    margin-top: 0;
+}
+
+.tascal-source-info {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-style: italic;
+    margin-top: 12px;
+}
+
+.tascal-delete-btn {
+    width: 100%;
+    margin-top: 16px;
+    padding: 8px 16px;
+    background-color: transparent;
+    color: var(--text-error);
+    border: 1px solid var(--text-error);
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.tascal-delete-btn:hover {
+    background-color: var(--text-error);
+    color: var(--text-on-accent);
+}
+
+/* ===== Template / Rule Card Styles ===== */
+
+.tascal-template-card {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    background-color: var(--background-primary);
+}
+
+.tascal-template-title {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+}
+
+.tascal-days-checkboxes {
+    margin: 8px 0;
+}
+
+.tascal-days-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+.tascal-day-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.tascal-day-checkbox input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.tascal-legacy-rule {
+    display: block;
+    padding: 4px 8px;
+    margin: 4px 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    background-color: var(--background-secondary);
+    border-radius: 4px;
+}
