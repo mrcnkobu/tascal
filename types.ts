@@ -1,5 +1,7 @@
 import { DateTime } from "luxon";
 
+// ===== Legacy types (still used by existing code) =====
+
 export interface EventData {
     summary: string;
     start: DateTime;
@@ -18,15 +20,65 @@ export interface TimeTrackingData {
     [eventId: string]: TimeTrackingEntry[];
 }
 
+// ===== New unified store types =====
+
+export interface StoredEvent {
+    id: string;              // crypto.randomUUID()
+    summary: string;         // supports [[wiki-links]]
+    start: string;           // "HH:MM"
+    end: string;             // "HH:MM"
+    source: "calendar" | "manual" | "recurring" | "rescheduled";
+    sourceRef?: string;      // ICS UID, recurring rule ID, origin date
+    done: boolean;
+    timeTracking: TimeTrackingEntry[];
+    linkedNotePath?: string;     // vault path to linked note
+    linkedNoteMarkdown?: string; // Obsidian-generated markdown link (respects vault settings)
+    templateId?: string;         // template used to create this event
+}
+
+export interface DayStore {
+    version: 1;
+    events: StoredEvent[];
+    suppressions?: string[]; // sourceRefs of events explicitly deleted/rescheduled
+    lastCalendarSync?: string; // ISO datetime of last sync
+}
+
+export interface RecurringRule {
+    id: string;
+    summary: string;
+    start: string;           // "HH:MM"
+    duration: number;        // minutes
+    recurrence: { type: "weekly"; days: string[] } | { type: "monthly"; day: number };
+    exceptions?: string[];   // ISO dates to skip
+}
+
+export interface EventTemplate {
+    id: string;
+    shortcode: string;       // "gym"
+    label: string;           // "Gym Session"
+    namePattern: string;     // "{{date}} Gym"
+    folder?: string;         // "notes/gym/{{date:yyyy-MM}}"
+    noteTemplate?: string;   // vault path to template note
+    defaultStart?: string;
+    defaultDuration?: number;
+    createNote?: boolean;
+}
+
+// ===== Settings =====
+
 export interface TascalSettings {
     timezone: string;
     calendars: { id: string; url: string }[];
     defaultDayStart: string; // e.g., "08:00"
     defaultDayEnd: string;   // e.g., "22:00"
     dayOverrides: Record<string, { start: string; end: string }>; // e.g., { "Saturday": { start: "10:00", end: "18:00" } }
-    recurringEvents: string[]; // Array of recurring event definitions
+    recurringEvents: string[]; // Array of recurring event definitions (legacy)
     timeTrackingData: TimeTrackingData;
     currentTrackingEventId: string | null;
+    storeMigrationDone?: boolean;
+    eventTemplates: EventTemplate[];
+    recurringRules: RecurringRule[];
+    pendingLinkedNotes?: Record<string, { templateId: string; dateStr: string; targetPath: string }>; // deprecated, kept for migration
 }
 
 export const DEFAULT_SETTINGS: TascalSettings = {
@@ -40,5 +92,9 @@ export const DEFAULT_SETTINGS: TascalSettings = {
     },
     recurringEvents: [],
     timeTrackingData: {},
-    currentTrackingEventId: null
+    currentTrackingEventId: null,
+    storeMigrationDone: false,
+    eventTemplates: [],
+    recurringRules: [],
+    pendingLinkedNotes: undefined
 };
