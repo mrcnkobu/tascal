@@ -36,9 +36,17 @@ export interface StoredEvent {
     templateId?: string;         // template used to create this event
 }
 
+export interface UnscheduledTask {
+    id: string;
+    summary: string;
+    done: boolean;
+    estimateMinutes?: number;
+}
+
 export interface DayStore {
     version: 1;
     events: StoredEvent[];
+    unscheduledTasks?: UnscheduledTask[];
     suppressions?: string[]; // sourceRefs of events explicitly deleted/rescheduled
     lastCalendarSync?: string; // ISO datetime of last sync
 }
@@ -64,10 +72,16 @@ export interface EventTemplate {
     createNote?: boolean;
 }
 
+export interface TascalUiState {
+    settingsSections: Record<string, boolean>;
+}
+
 // ===== Settings =====
 
 export interface TascalSettings {
     timezone: string;
+    timelineHeading: string;
+    unscheduledHeading: string;
     calendars: { id: string; url: string }[];
     defaultDayStart: string; // e.g., "08:00"
     defaultDayEnd: string;   // e.g., "22:00"
@@ -79,10 +93,13 @@ export interface TascalSettings {
     eventTemplates: EventTemplate[];
     recurringRules: RecurringRule[];
     pendingLinkedNotes?: Record<string, { templateId: string; dateStr: string; targetPath: string }>; // deprecated, kept for migration
+    uiState: TascalUiState;
 }
 
 export const DEFAULT_SETTINGS: TascalSettings = {
     timezone: "Europe/Warsaw",
+    timelineHeading: "Timeline",
+    unscheduledHeading: "Unscheduled",
     calendars: [],
     defaultDayStart: "08:00",
     defaultDayEnd: "22:00",
@@ -96,5 +113,14 @@ export const DEFAULT_SETTINGS: TascalSettings = {
     storeMigrationDone: false,
     eventTemplates: [],
     recurringRules: [],
-    pendingLinkedNotes: undefined
+    pendingLinkedNotes: undefined,
+    uiState: {
+	settingsSections: {
+	    general: true,
+	    calendars: true,
+	    workingHours: true,
+	    recurringRules: true,
+	    templates: true,
+	}
+    }
 };

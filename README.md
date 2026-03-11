@@ -14,26 +14,22 @@ Each calendar gets a configurable short name that prefixes event summaries, e.g.
 
 ### Timeline
 
-The timeline is rendered inside a `<!--tascal-->` section in your note. It shows all events as checkbox items with start/end times, free time gaps between them, and a stats line at the top:
+The timeline is rendered under the configured heading in your daily note. By default that heading is `## Timeline`. Tascal manages the generated content beneath that heading for you.
 
 ```
-<!--tascal-->
-### Timeline
-**2/5** done | 2h/8h30m | **Total TT: 1h15m**
+## Timeline
+<!-- tascal:start -->
+**2/5** done | 2h/8h30m | **TT 1h15m** | *sync 09:10*
 
 - *08:00-09:00 (free)*
 - [x] 09:00-10:00 (work) Team standup
-- [ ] 10:00-11:30 (work) Deep work block
+- [ ] > 10:00-11:30 (work) Deep work block *· tracking*
 - *11:30-12:00 (free)*
-- [ ] 12:00-12:30 Lunch [rc:w]
+- [ ] 12:00-12:30 Lunch *· rc*
 - [ ] 12:30-14:00 (work) Project review
-- [x] 14:00-15:00 Code review [rs:2026-02-05]
+- [x] 14:00-15:00 Code review *· rs:2026-02-05*
 - *15:00-22:00 (free)*
-
-<!--manual
-@12:00 (30m) Lunch [w:Mon,Tue,Wed,Thu,Fri]
--->
-<!--/tascal-->
+<!-- tascal:end -->
 ```
 
 The stats line shows: completed/total tasks, elapsed/total scheduled time, and total tracked time.
@@ -44,22 +40,26 @@ Checkbox state is preserved across timeline rebuilds -- checking off a task and 
 
 ### Manual tasks
 
-Define your own tasks inside the `<!--manual ... -->` block using two formats:
+Manual tasks are created and maintained through Tascal commands and modals. The daily note is treated as rendered output rather than a place to author manual blocks.
 
-**Start-end format:**
-```
-@09:00-17:00 Deep work
-@14:00-15:30 Meeting with client
+### Unscheduled tasks
+
+Tascal can also render a second section for tasks that belong to the day but do not have a time slot yet. By default this appears under `## Unscheduled`.
+
+Example:
+
+```md
+## Unscheduled
+<!-- tascal:unscheduled:start -->
+- [ ] Send invoice *(20m)*
+- [ ] Prepare slides *(45m)*
+<!-- tascal:unscheduled:end -->
 ```
 
-**Start-duration format:**
-```
-@09:00 (1h) Morning review
-@14:00 (30m) Quick call
-@8 (2h) Reading
-```
-
-Hours can be written without minutes (`@8` = `@08:00`). Durations use `h` and `m` notation (`1h30m`, `2h`, `45m`).
+These tasks can be:
+- completed from the note or management modal
+- moved to another day
+- scheduled onto today's timeline
 
 ### Recurring events
 
@@ -77,7 +77,7 @@ Define events that repeat on a schedule directly in Tascal settings:
 @10:00 (2h) Budget review [m:15]
 ```
 
-Recurring events are automatically added to the manual blocks when you sync or update the timeline. They're marked with `[rc:w]` or `[rc:m]` in the timeline so you can tell them apart. Each occurrence is tracked to prevent duplicates.
+Recurring events are automatically added when you sync or update the timeline. They're marked with `*· rc*` in the rendered timeline.
 
 ### Rescheduling
 
@@ -87,11 +87,11 @@ Append `@YYYY-MM-DD` to any manual task to move it to another date:
 @14:00 (1h) Dentist appointment @2026-02-10
 ```
 
-When the timeline is updated, this task is removed from today and saved to `.tascal/rescheduled.md`. On the target date, it appears automatically with a `[rs:YYYY-MM-DD]` marker showing where it came from.
+When the timeline is updated, this task is removed from today and saved to `.tascal/rescheduled.md`. On the target date, it appears automatically with a `*· rs:YYYY-MM-DD*` marker showing where it came from.
 
 ### Time tracking
 
-Track time spent on individual events with start/stop controls. Tracked time is stored inline as `{TT: HH:MM::HH:MM}` notation and persisted to `.tascal/tt-YYYY-MM-DD.json` files.
+Track time spent on individual events with start/stop controls. Tracked time is stored inline as `{TT: HH:MM::HH:MM}` notation in the day store.
 
 **Starting tracking:**
 - Place `>` after the checkbox on a timeline item, then run the start command
@@ -100,15 +100,8 @@ Track time spent on individual events with start/stop controls. Tracked time is 
 **Commands:**
 - `Tascal: Start time tracking` -- begins a tracking session for the marked event
 - `Tascal: Stop time tracking` -- ends the current session and records the duration
-- `Tascal: Save time tracking data` -- extracts `{TT:}` data from the timeline and saves it to the JSON file
 
 Multiple tracking sessions per event are supported. The total tracked time across all events is shown in the stats line.
-
-### Format tasks
-
-Sorts manual blocks by start time and normalizes their format: short tasks (<=90 min) use duration notation, longer ones use start-end notation.
-
-**Command:** `Tascal: Format tasks`
 
 ### Working hours
 
@@ -121,6 +114,8 @@ Default: 08:00-22:00, with Saturday 10:00-18:00 and Sunday 10:00-20:00.
 | Setting | Description |
 |---|---|
 | Timezone | IANA timezone for all date/time operations (e.g. `Europe/Warsaw`) |
+| Timeline Heading | Heading under which Tascal renders the generated timeline |
+| Unscheduled Heading | Heading under which Tascal renders unscheduled day tasks |
 | Calendars | List of ICS calendar URLs with short names |
 | Default Day Start/End | Working hours boundaries for the timeline |
 | Day Overrides | Per-day-of-week start/end overrides |
@@ -130,8 +125,7 @@ Default: 08:00-22:00, with Saturday 10:00-18:00 and Sunday 10:00-20:00.
 
 | Path | Contents |
 |---|---|
-| `.tascal/YYYY-MM-DD.json` | Cached calendar events for each synced date |
-| `.tascal/tt-YYYY-MM-DD.json` | Time tracking data per day |
+| `.tascal/days/YYYY-MM-DD.json` | Unified per-day store for events, tracking, suppressions, and sync metadata |
 | `.tascal/rescheduled.md` | Rescheduled task entries |
 | `.tascal/recurring.md` | Markers tracking which recurring events have been added to which dates |
 
@@ -167,10 +161,13 @@ npm run deploy
 |---|---|
 | Sync calendar | Fetch ICS calendars and rebuild the timeline |
 | Update timeline | Rebuild timeline from cache, recurring events, and manual blocks |
-| Format tasks | Sort and normalize manual block formatting |
+| Add event | Add a manual event, optionally from a template |
+| Add unscheduled task | Add a date-scoped task without a time slot |
+| Edit event | Edit, delete, or reschedule an existing event |
+| Manage unscheduled tasks | Complete, move, schedule, or delete unscheduled tasks |
+| Manage rescheduled events | Review future rescheduled events |
 | Start time tracking | Begin tracking time for a selected event |
 | Stop time tracking | End the current tracking session |
-| Save time tracking data | Persist timeline tracking data to JSON |
 
 ## License
 

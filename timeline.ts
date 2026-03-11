@@ -1,14 +1,16 @@
 import { App } from "obsidian";
 import { DateTime } from "luxon";
-import { DayStore, TascalSettings, StoredEvent } from "./types";
-import { formatTime, parseDuration } from "./utils";
+import { TascalSettings, DayStore, UnscheduledTask } from "./types";
 import {
-    loadDayStore, saveDayStore, addEvent, syncCheckboxState,
-    renderTimeline, createManualEvent, sortEventsByTime,
-    applyRecurringRules
+    loadDayStore, saveDayStore, syncCheckboxState,
+    renderTimeline, applyRecurringRules
 } from "./store";
 
-// ===== Section parsing =====
+const MANAGED_START = "<!-- tascal:start -->";
+const MANAGED_END = "<!-- tascal:end -->";
+const UNSCHEDULED_START = "<!-- tascal:unscheduled:start -->";
+const UNSCHEDULED_END = "<!-- tascal:unscheduled:end -->";
+const DEFAULT_HEADING_LEVEL = 2;
 
 export function extractTascalSection(content: string): {
     timeline: string[];
@@ -19,148 +21,141 @@ export function extractTascalSection(content: string): {
 } {
     const startTag = "<!--tascal-->";
     const endTag = "<!--/tascal-->";
-    const manualTag = "<!--manual";
 
     const start = content.indexOf(startTag);
     const end = content.indexOf(endTag);
 
     if (start === -1 || end === -1 || start > end) {
-        return { timeline: [], manualBlockLines: [], fullSection: "", start: -1, end: -1 };
+	return { timeline: [], manualBlockLines: [], fullSection: "", start: -1, end: -1 };
     }
 
     const sectionContent = content.slice(start + startTag.length, end).trim();
-
-    const manualStart = sectionContent.indexOf(manualTag);
-    let timelineText = "";
-    let manualText = "";
-
-    if (manualStart !== -1) {
-        timelineText = sectionContent.slice(0, manualStart).trim();
-        const manualEnd = sectionContent.indexOf("-->", manualStart);
-        manualText = sectionContent.slice(manualStart + manualTag.length, manualEnd).trim();
-    } else {
-        const parts = sectionContent.split("\n---\n");
-        timelineText = parts[0] || "";
-        manualText = parts[1] || "";
-    }
-
-    const timeline = timelineText.split("\n").filter(line => line.trim() && !line.startsWith("### Timeline"));
-    const manualBlockLines = manualText.split("\n").filter(line => line.trim());
+    const timeline = sectionContent
+	.split("\n")
+	.filter(line => line.trim() && !line.startsWith("### Timeline") && !line.startsWith("<!--manual"));
 
     return {
-        timeline,
-        manualBlockLines,
-        fullSection: sectionContent,
-        start,
-        end: end + endTag.length,
+	timeline,
+	manualBlockLines: [],
+	fullSection: sectionContent,
+	start,
+	end: end + endTag.length,
+    };
+}
+
+export function extractManagedTimelineSection(content: string, heading: string): {
+    timeline: string[];
+    start: number;
+    end: number;
+    headingFound: boolean;
+} {
+    const headingMatch = findHeading(content, heading);
+    if (!headingMatch) {
+	return { timeline: [], start: -1, end: -1, headingFound: false };
+    }
+
+    const bodyStart = headingMatch.lineEnd;
+    const sectionEnd = findSectionEnd(content, headingMatch.lineEnd, headingMatch.level);
+    const sectionBody = content.slice(bodyStart, sectionEnd).replace(/^\n+/, "");
+
+    const anchorStart = sectionBody.indexOf(MANAGED_START);
+    const anchorEnd = sectionBody.indexOf(MANAGED_END);
+    const managed = anchorStart !== -1 && anchorEnd !== -1 && anchorStart < anchorEnd
+	? sectionBody.slice(anchorStart + MANAGED_START.length, anchorEnd)
+	: sectionBody;
+
+    return {
+	timeline: managed.split("\n").map(line => line.trimEnd()).filter(line => line.trim()),
+	start: bodyStart,
+	end: sectionEnd,
+	headingFound: true,
+    };
+}
+
+export function extractManagedUnscheduledSection(content: string, heading: string): {
+    lines: string[];
+    start: number;
+    end: number;
+    headingFound: boolean;
+} {
+    const headingMatch = findHeading(content, heading);
+    if (!headingMatch) {
+	return { lines: [], start: -1, end: -1, headingFound: false };
+    }
+
+    const bodyStart = headingMatch.lineEnd;
+    const sectionEnd = findSectionEnd(content, headingMatch.lineEnd, headingMatch.level);
+    const sectionBody = content.slice(bodyStart, sectionEnd).replace(/^\n+/, "");
+
+    const anchorStart = sectionBody.indexOf(UNSCHEDULED_START);
+    const anchorEnd = sectionBody.indexOf(UNSCHEDULED_END);
+    const managed = anchorStart !== -1 && anchorEnd !== -1 && anchorStart < anchorEnd
+	? sectionBody.slice(anchorStart + UNSCHEDULED_START.length, anchorEnd)
+	: sectionBody;
+
+    return {
+	lines: managed.split("\n").map(line => line.trimEnd()).filter(line => line.trim()),
+	start: bodyStart,
+	end: sectionEnd,
+	headingFound: true,
     };
 }
 
 export function updateTascalSection(
     content: string,
-    timelineLines: string[]
+    timelineLines: string[],
+    heading: string
 ): string {
-    const startTag = "<!--tascal-->";
-    const endTag = "<!--/tascal-->";
-    const newSection =
-        `${startTag}\n` +
-        `### Timeline\n` +
-        timelineLines.join("\n") + "\n" +
-        `${endTag}`;
+    const managedBlock = [MANAGED_START, ...timelineLines, MANAGED_END].join("\n");
+    const existing = extractManagedTimelineSection(content, heading);
 
-    const { start, end } = extractTascalSection(content);
-    if (start === -1 || end === -1) {
-        return content + `\n\n${newSection}`;
+    if (!existing.headingFound) {
+	const headingPrefix = `${"#".repeat(DEFAULT_HEADING_LEVEL)} ${heading}`;
+	const prefix = content.trimEnd();
+	return `${prefix}${prefix.length > 0 ? "\n\n" : ""}${headingPrefix}\n${managedBlock}\n`;
     }
 
-    return content.slice(0, start) + newSection + content.slice(end);
+    const replacement = `${managedBlock}\n`;
+    return content.slice(0, existing.start) + replacement + content.slice(existing.end);
 }
 
-// ===== Manual block import (one-time, from legacy <!--manual--> blocks) =====
+export function updateUnscheduledSection(
+    content: string,
+    lines: string[],
+    heading: string
+): string {
+    const managedBlock = [UNSCHEDULED_START, ...lines, UNSCHEDULED_END].join("\n");
+    const existing = extractManagedUnscheduledSection(content, heading);
 
-const MANUAL_START_END_RE = /^@(\d{1,2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}(?::\d{2})?)\s+(.*?)(?:\s+@(\d{4}-\d{2}-\d{2}))?$/;
-const MANUAL_START_DUR_RE = /^@(\d{1,2}(?::\d{2})?)\s*\(([\dhm]+)\)\s+(.*?)(?:\s+@(\d{4}-\d{2}-\d{2}))?$/;
+    if (!existing.headingFound) {
+	const headingPrefix = `${"#".repeat(DEFAULT_HEADING_LEVEL)} ${heading}`;
+	const prefix = content.trimEnd();
+	return `${prefix}${prefix.length > 0 ? "\n\n" : ""}${headingPrefix}\n${managedBlock}\n`;
+    }
 
-function importManualBlocksToStore(
-    store: DayStore,
-    manualBlockLines: string[],
-    dateStr: string,
-    timezone: string
-): { store: DayStore; rescheduled: { target: string; line: string }[] } {
-    let updated = store;
-    const rescheduled: { target: string; line: string }[] = [];
+    const replacement = `${managedBlock}\n`;
+    return content.slice(0, existing.start) + replacement + content.slice(existing.end);
+}
 
-    for (const line of manualBlockLines) {
-	// Check for reschedule
-	const rescheduleMatch = line.match(/@(\d{4}-\d{2}-\d{2})(?:@(\d{2}:\d{2}))?/);
-	const isRescheduled = rescheduleMatch !== null;
-	const rescheduleTime = rescheduleMatch?.[2] || null;
+export async function appendRescheduledTask(app: App, globalPath: string, targetDate: string, originalDate: string, line: string) {
+    const filePath = `${globalPath}/rescheduled.md`;
+    const adapter = app.vault.adapter;
 
-	let m;
-	if ((m = line.match(MANUAL_START_END_RE))) {
-	    const [_, startRaw, endRaw, summary, reschedDate] = m;
+    if (!(await adapter.exists(globalPath))) {
+	await adapter.mkdir(globalPath);
+    }
 
-	    if (isRescheduled && !rescheduleTime) {
-		rescheduled.push({ target: reschedDate!, line });
-		continue;
-	    }
+    const rescheduleEntry = `@${targetDate} from ${originalDate}: ${line}`;
 
-	    const startStr = formatTime(startRaw);
-	    const endStr = formatTime(endRaw);
-	    const cleanSummary = summary.replace(/\s*\[rc:[wm]\]$/, "").trim();
-
-	    // Only add if not already in store
-	    const exists = updated.events.some(
-		ev => ev.start === startStr && ev.summary === cleanSummary
-	    );
-	    if (!exists) {
-		const source = line.includes("[rc:") ? "recurring" as const : "manual" as const;
-		updated = addEvent(updated, {
-		    id: crypto.randomUUID(),
-		    summary: cleanSummary,
-		    start: startStr,
-		    end: endStr,
-		    source,
-		    done: false,
-		    timeTracking: [],
-		});
-	    }
-	} else if ((m = line.match(MANUAL_START_DUR_RE))) {
-	    const [_, startRaw, durStr, summary, reschedDate] = m;
-
-	    if (isRescheduled && !rescheduleTime) {
-		rescheduled.push({ target: reschedDate!, line });
-		continue;
-	    }
-
-	    const startStr = formatTime(startRaw);
-	    const durationMinutes = parseDuration(durStr);
-	    const startDt = DateTime.fromFormat(startStr, "HH:mm");
-	    const endStr = startDt.plus({ minutes: durationMinutes }).toFormat("HH:mm");
-	    const cleanSummary = summary.replace(/\s*\[rc:[wm]\]$/, "").trim();
-
-	    const exists = updated.events.some(
-		ev => ev.start === startStr && ev.summary === cleanSummary
-	    );
-	    if (!exists) {
-		const source = line.includes("[rc:") ? "recurring" as const : "manual" as const;
-		updated = addEvent(updated, {
-		    id: crypto.randomUUID(),
-		    summary: cleanSummary,
-		    start: startStr,
-		    end: endStr,
-		    source,
-		    done: false,
-		    timeTracking: [],
-		});
-	    }
+    if (!(await adapter.exists(filePath))) {
+	await adapter.write(filePath, `${rescheduleEntry}\n`);
+    } else {
+	const current = await adapter.read(filePath);
+	if (!current.includes(rescheduleEntry)) {
+	    await adapter.write(filePath, `${current.trim()}\n${rescheduleEntry}\n`);
 	}
     }
-
-    return { store: updated, rescheduled };
 }
-
-// ===== Recurring tasks (from settings strings — legacy format) =====
 
 async function applyLegacyRecurringEvents(
     app: App,
@@ -172,7 +167,6 @@ async function applyLegacyRecurringEvents(
     const recurringFilePath = ".tascal/recurring.md";
     const dateStr = date.toISODate()!;
 
-    // Load existing markers
     let existingMarkers: Record<string, string[]> = {};
     if (await adapter.exists(recurringFilePath)) {
 	try {
@@ -201,8 +195,6 @@ async function applyLegacyRecurringEvents(
 	const [_, type, rule] = repeatMatch;
 	const eventKey = line.replace(/\s*\[(rc:[wm]|[wm]:[^\]]+)\]$/, "").trim();
 	if (existingMarkers[eventKey]?.includes(dateStr)) continue;
-
-	// Skip if explicitly suppressed (deleted/rescheduled)
 	if (suppressions.has(eventKey)) continue;
 
 	let shouldAdd = false;
@@ -218,11 +210,11 @@ async function applyLegacyRecurringEvents(
 	}
 
 	if (shouldAdd) {
-	    // Parse the event line
-	    let taskLine = line.replace(/\s*<!--.*$/, "").trim();
-	    taskLine = taskLine.replace(/\s*\[(rc:[wm]|[wm]:[^\]]+)\]$/, "");
+	    const taskLine = line
+		.replace(/\s*<!--.*$/, "")
+		.trim()
+		.replace(/\s*\[(rc:[wm]|[wm]:[^\]]+)\]$/, "");
 
-	    // Parse start/end from the event definition
 	    const startEndMatch = taskLine.match(/^@(\d{1,2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}(?::\d{2})?)\s+(.+)$/);
 	    const startDurMatch = taskLine.match(/^@(\d{1,2}(?::\d{2})?)\s*\(([\dhm]+)\)\s+(.+)$/);
 
@@ -231,12 +223,12 @@ async function applyLegacyRecurringEvents(
 	    let endStr: string;
 
 	    if (startEndMatch) {
-		startStr = formatTime(startEndMatch[1]);
-		endStr = formatTime(startEndMatch[2]);
+		startStr = normalizeTime(startEndMatch[1]);
+		endStr = normalizeTime(startEndMatch[2]);
 		summary = startEndMatch[3].trim();
 	    } else if (startDurMatch) {
-		startStr = formatTime(startDurMatch[1]);
-		const dur = parseDuration(startDurMatch[2]);
+		startStr = normalizeTime(startDurMatch[1]);
+		const dur = parseDurationToMinutes(startDurMatch[2]);
 		const startDt = DateTime.fromFormat(startStr, "HH:mm");
 		endStr = startDt.plus({ minutes: dur }).toFormat("HH:mm");
 		summary = startDurMatch[3].trim();
@@ -244,27 +236,26 @@ async function applyLegacyRecurringEvents(
 		continue;
 	    }
 
-	    // Deduplicate against store
-	    const exists = updated.events.some(
-		ev => ev.start === startStr && ev.summary === summary
-	    );
+	    const exists = updated.events.some(ev => ev.start === startStr && ev.summary === summary);
 	    if (!exists) {
-		updated = addEvent(updated, {
-		    id: crypto.randomUUID(),
-		    summary,
-		    start: startStr,
-		    end: endStr,
-		    source: "recurring",
-		    done: false,
-		    timeTracking: [],
-		});
+		updated = {
+		    ...updated,
+		    events: [...updated.events, {
+			id: crypto.randomUUID(),
+			summary,
+			start: startStr,
+			end: endStr,
+			source: "recurring",
+			done: false,
+			timeTracking: [],
+		    }],
+		};
 	    }
 
 	    newMarkers.push(`${eventKey} <!-- added:${dateStr} -->`);
 	}
     }
 
-    // Save markers
     if (newMarkers.length > 0) {
 	const folderPath = ".tascal";
 	if (!(await adapter.exists(folderPath))) await adapter.mkdir(folderPath);
@@ -279,13 +270,10 @@ async function applyLegacyRecurringEvents(
     return updated;
 }
 
-// ===== Rescheduled tasks =====
-
 async function loadRescheduledIntoStore(
     app: App,
     store: DayStore,
     dateStr: string,
-    timezone: string
 ): Promise<DayStore> {
     const filePath = ".tascal/rescheduled.md";
     const adapter = app.vault.adapter;
@@ -314,21 +302,24 @@ async function loadRescheduledIntoStore(
 		continue;
 	    }
 	    const summary = summaryRaw.replace(/\[[^\]]+\]/, "").replace(/@\d{4}-\d{2}-\d{2}/, "").trim();
-	    const startStr = formatTime(startRaw);
-	    const endStr = formatTime(endRaw);
+	    const startStr = normalizeTime(startRaw);
+	    const endStr = normalizeTime(endRaw);
 
 	    const exists = updated.events.some(ev => ev.start === startStr && ev.summary === summary);
 	    if (!exists) {
-		updated = addEvent(updated, {
-		    id: crypto.randomUUID(),
-		    summary,
-		    start: startStr,
-		    end: endStr,
-		    source: "rescheduled",
-		    sourceRef: fromDate,
-		    done: false,
-		    timeTracking: [],
-		});
+		updated = {
+		    ...updated,
+		    events: [...updated.events, {
+			id: crypto.randomUUID(),
+			summary,
+			start: startStr,
+			end: endStr,
+			source: "rescheduled",
+			sourceRef: fromDate,
+			done: false,
+			timeTracking: [],
+		    }]
+		};
 	    }
 	    updatedLines.push(`%%processed%% ${line}`);
 	    continue;
@@ -342,23 +333,26 @@ async function loadRescheduledIntoStore(
 		continue;
 	    }
 	    const summary = summaryRaw.replace(/\[[^\]]+\]/, "").replace(/@\d{4}-\d{2}-\d{2}/, "").trim();
-	    const startStr = formatTime(startRaw);
-	    const dur = parseDuration(durStr);
+	    const startStr = normalizeTime(startRaw);
+	    const dur = parseDurationToMinutes(durStr);
 	    const startDt = DateTime.fromFormat(startStr, "HH:mm");
 	    const endStr = startDt.plus({ minutes: dur }).toFormat("HH:mm");
 
 	    const exists = updated.events.some(ev => ev.start === startStr && ev.summary === summary);
 	    if (!exists) {
-		updated = addEvent(updated, {
-		    id: crypto.randomUUID(),
-		    summary,
-		    start: startStr,
-		    end: endStr,
-		    source: "rescheduled",
-		    sourceRef: fromDate,
-		    done: false,
-		    timeTracking: [],
-		});
+		updated = {
+		    ...updated,
+		    events: [...updated.events, {
+			id: crypto.randomUUID(),
+			summary,
+			start: startStr,
+			end: endStr,
+			source: "rescheduled",
+			sourceRef: fromDate,
+			done: false,
+			timeTracking: [],
+		    }]
+		};
 	    }
 	    updatedLines.push(`%%processed%% ${line}`);
 	    continue;
@@ -370,28 +364,6 @@ async function loadRescheduledIntoStore(
     await adapter.write(filePath, updatedLines.join("\n") + "\n");
     return updated;
 }
-
-export async function appendRescheduledTask(app: App, globalPath: string, targetDate: string, originalDate: string, line: string) {
-    const filePath = `${globalPath}/rescheduled.md`;
-    const adapter = app.vault.adapter;
-
-    if (!(await adapter.exists(globalPath))) {
-        await adapter.mkdir(globalPath);
-    }
-
-    const rescheduleEntry = `@${targetDate} from ${originalDate}: ${line}`;
-
-    if (!(await adapter.exists(filePath))) {
-        await adapter.write(filePath, `${rescheduleEntry}\n`);
-    } else {
-        const current = await adapter.read(filePath);
-        if (!current.includes(rescheduleEntry)) {
-            await adapter.write(filePath, `${current.trim()}\n${rescheduleEntry}\n`);
-        }
-    }
-}
-
-// ===== Main build pipeline =====
 
 export interface BuildTimelineResult {
     updatedNote: string;
@@ -406,41 +378,137 @@ export async function buildTimeline(
     settings: TascalSettings
 ): Promise<BuildTimelineResult> {
     const localDate = DateTime.fromISO(dateStr, { zone: settings.timezone });
-    const { timeline: existingTimeline, manualBlockLines } = extractTascalSection(note);
+    const { timeline: existingTimeline } = extractManagedTimelineSection(note, settings.timelineHeading);
+    const { lines: existingUnscheduled } = extractManagedUnscheduledSection(note, settings.unscheduledHeading);
 
-    // Load current store
     let store = await loadDayStore(app, dateStr);
 
-    // Sync checkbox state from existing rendered markdown
     if (existingTimeline.length > 0) {
 	store = syncCheckboxState(store, existingTimeline);
     }
-
-    // Import legacy manual blocks if present
-    let rescheduled: { target: string; line: string }[] = [];
-    if (manualBlockLines.length > 0) {
-	const result = importManualBlocksToStore(store, manualBlockLines, dateStr, settings.timezone);
-	store = result.store;
-	rescheduled = result.rescheduled;
+    if (existingUnscheduled.length > 0) {
+	store = syncUnscheduledCheckboxState(store, existingUnscheduled);
     }
 
-    // Apply rescheduled tasks from file
-    store = await loadRescheduledIntoStore(app, store, dateStr, settings.timezone);
+    const rescheduled: { target: string; line: string }[] = [];
 
-    // Apply structured recurring rules (Phase 5)
+    store = await loadRescheduledIntoStore(app, store, dateStr);
+
     if (settings.recurringRules && settings.recurringRules.length > 0) {
 	store = applyRecurringRules(store, settings.recurringRules, dateStr, settings.timezone);
     }
 
-    // Apply legacy recurring events (for rules not yet migrated)
     store = await applyLegacyRecurringEvents(app, store, settings.recurringEvents, localDate);
 
-    // Save store
     await saveDayStore(app, dateStr, store);
 
-    // Render timeline
-    const timelineLines = renderTimeline(store.events, settings, dateStr, settings.currentTrackingEventId);
-    const updatedNote = updateTascalSection(note, timelineLines);
+    const timelineLines = renderTimeline(
+	store.events,
+	settings,
+	dateStr,
+	settings.currentTrackingEventId,
+	store.lastCalendarSync
+    );
+    const unscheduledLines = renderUnscheduledTasks(store.unscheduledTasks || []);
+    let updatedNote = updateTascalSection(note, timelineLines, settings.timelineHeading);
+    updatedNote = updateUnscheduledSection(updatedNote, unscheduledLines, settings.unscheduledHeading);
 
     return { updatedNote, store, rescheduled };
+}
+
+function findHeading(content: string, heading: string): { start: number; lineEnd: number; level: number } | null {
+    const escaped = escapeRegExp(heading.trim());
+    const regex = new RegExp(`^(#{1,6})\\s+${escaped}\\s*$`, "gm");
+    const match = regex.exec(content);
+    if (!match || match.index === undefined) {
+	return null;
+    }
+    const start = match.index;
+    const lineEnd = content.indexOf("\n", start);
+    return {
+	start,
+	lineEnd: lineEnd === -1 ? content.length : lineEnd + 1,
+	level: match[1].length,
+    };
+}
+
+function findSectionEnd(content: string, from: number, level: number): number {
+    const regex = /^(#{1,6})\s+.*$/gm;
+    regex.lastIndex = from;
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(content)) !== null) {
+	if (match.index >= from && match[1].length <= level) {
+	    return match.index;
+	}
+    }
+
+    return content.length;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeTime(time: string): string {
+    if (time.includes(":")) {
+	const [hours, minutes] = time.split(":");
+	return `${hours.padStart(2, "0")}:${minutes}`;
+    }
+    return `${time.padStart(2, "0")}:00`;
+}
+
+function parseDurationToMinutes(text: string): number {
+    const regex = /(\d+)(h|m)/g;
+    let match: RegExpExecArray | null;
+    let totalMinutes = 0;
+    while ((match = regex.exec(text)) !== null) {
+	const value = parseInt(match[1]);
+	const unit = match[2];
+	totalMinutes += unit === "h" ? value * 60 : value;
+    }
+    return totalMinutes;
+}
+
+export function renderUnscheduledTasks(tasks: UnscheduledTask[]): string[] {
+    if (tasks.length === 0) {
+	return ["- *No unscheduled tasks*"];
+    }
+
+    return tasks.map((task) => {
+	const checked = task.done ? "x" : " ";
+	const estimate = task.estimateMinutes ? ` *(${formatMinutes(task.estimateMinutes)})*` : "";
+	return `- [${checked}] ${task.summary}${estimate}`;
+    });
+}
+
+export function syncUnscheduledCheckboxState(store: DayStore, lines: string[]): DayStore {
+    const pattern = /^- \[( |x)]\s+(.+?)(?:\s+\*\(([^)]+)\)\*)?$/;
+    let updated = store;
+
+    for (const line of lines) {
+	const match = line.match(pattern);
+	if (!match) continue;
+	const done = match[1] === "x";
+	const summary = match[2].trim();
+	const task = (updated.unscheduledTasks || []).find(item => item.summary === summary);
+	if (task && task.done !== done) {
+	    updated = {
+		...updated,
+		unscheduledTasks: (updated.unscheduledTasks || []).map(item =>
+		    item.id === task.id ? { ...item, done } : item
+		),
+	    };
+	}
+    }
+
+    return updated;
+}
+
+function formatMinutes(minutes: number): string {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (hours > 0 && mins > 0) return `${hours}h${mins}m`;
+    if (hours > 0) return `${hours}h`;
+    return `${mins}m`;
 }

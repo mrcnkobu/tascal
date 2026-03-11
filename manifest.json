@@ -3,7 +3,7 @@
 	"name": "Tascal",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "A simple plugin for ics file handling",
+	"description": "Calendar-driven daily planning, timeline rendering, and time tracking for Obsidian",
 	"author": "mkobu",
 	"authorUrl": "",
 	"isDesktopOnly": false

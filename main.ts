@@ -7,7 +7,8 @@ import { extractEventsForDate } from "./calendar";
 import {
     loadDayStore, saveDayStore, mergeCalendarEvents, updateEvent,
     removeEvent, addEvent, addSuppression, findEventById, startTracking, stopTracking,
-    renderTimeline, createManualEvent, listDayStoreDates, IncomingCalendarEvent
+    renderTimeline, createManualEvent, listDayStoreDates, IncomingCalendarEvent,
+    addUnscheduledTask, createUnscheduledTask, removeUnscheduledTask, updateUnscheduledTask
 } from "./store";
 import { updateTascalSection, appendRescheduledTask, buildTimeline } from "./timeline";
 import { TascalSettingTab } from "./settings-tab";
@@ -15,7 +16,8 @@ import { runStoreMigration, migrateRecurringStringsToRules } from "./migration";
 import {
     EventSelectionModal, AddEventModal, EditEventModal,
     RescheduleModal, RescheduledEventsModal,
-    AddEventResult, RescheduledEventEntry
+    AddEventResult, RescheduledEventEntry, AddUnscheduledTaskModal,
+    UnscheduledTasksModal, ScheduleUnscheduledTaskModal
 } from "./modals";
 import { createLinkedNote } from "./templates";
 
@@ -62,6 +64,10 @@ export default class TascalPlugin extends Plugin {
 		    new Notice("Loading calendar events...");
 
 		    const incoming: IncomingCalendarEvent[] = [];
+		    const syncStats = {
+			succeeded: 0,
+			failed: [] as string[],
+		    };
 
 		    for (const cal of this.settings.calendars) {
 			try {
@@ -77,9 +83,10 @@ export default class TascalPlugin extends Plugin {
 				    icsUid: ev.uid,
 				});
 			    }
+			    syncStats.succeeded += 1;
 			} catch (e) {
 			    console.error(`Failed to load calendar ${cal.id}:`, e);
-			    new Notice(`Error loading calendar ${cal.id}`);
+			    syncStats.failed.push(cal.id || cal.url);
 			}
 		    }
 
@@ -94,7 +101,14 @@ export default class TascalPlugin extends Plugin {
 		    const result = await buildTimeline(this.app, note, dateStr, this.settings);
 
 		    await this.app.vault.modify(activeFile, result.updatedNote);
-		    new Notice(`Inserted ${incoming.length} event(s) for ${dateStr}.`);
+		    const syncSummary = [
+			`Synced ${incoming.length} event(s) for ${dateStr}.`,
+			`${syncStats.succeeded} calendar(s) succeeded.`,
+		    ];
+		    if (syncStats.failed.length > 0) {
+			syncSummary.push(`Failed: ${syncStats.failed.join(", ")}`);
+		    }
+		    new Notice(syncSummary.join(" "), 8000);
 		} catch (error) {
 		    console.error("Failed to insert ICS events:", error);
 		    new Notice("Error occurred. See console.");
@@ -120,7 +134,12 @@ export default class TascalPlugin extends Plugin {
 		}
 
 		await this.app.vault.modify(file, result.updatedNote);
-		new Notice("Timeline updated.");
+		new Notice(
+		    result.rescheduled.length > 0
+			? `Timeline updated. Moved ${result.rescheduled.length} task(s) to future dates.`
+			: "Timeline updated.",
+		    6000
+		);
 	    }
 	});
 
@@ -148,20 +167,26 @@ export default class TascalPlugin extends Plugin {
 
 	this.addCommand({
 	    id: "edit-event",
-	    name: "Edit / delete event",
+	    name: "Edit event",
 	    callback: () => this.editEventCommand()
-	});
-
-	this.addCommand({
-	    id: "reschedule-event",
-	    name: "Reschedule event",
-	    callback: () => this.rescheduleEventCommand()
 	});
 
 	this.addCommand({
 	    id: "manage-rescheduled",
 	    name: "Manage rescheduled events",
 	    callback: () => this.manageRescheduledCommand()
+	});
+
+	this.addCommand({
+	    id: "add-unscheduled-task",
+	    name: "Add unscheduled task",
+	    callback: () => this.addUnscheduledTaskCommand()
+	});
+
+	this.addCommand({
+	    id: "manage-unscheduled-tasks",
+	    name: "Manage unscheduled tasks",
+	    callback: () => this.manageUnscheduledTasksCommand()
 	});
 
     }
@@ -231,9 +256,9 @@ export default class TascalPlugin extends Plugin {
 
     private async reRenderTimeline(file: any, dateStr: string, store: import("./types").DayStore) {
 	const note = await this.app.vault.read(file);
-	const timelineLines = renderTimeline(store.events, this.settings, dateStr, this.settings.currentTrackingEventId);
-	const updatedNote = updateTascalSection(note, timelineLines);
-	await this.app.vault.modify(file, updatedNote);
+	await saveDayStore(this.app, dateStr, store);
+	const result = await buildTimeline(this.app, note, dateStr, this.settings);
+	await this.app.vault.modify(file, result.updatedNote);
     }
 
     // ===== Time tracking =====
@@ -343,15 +368,24 @@ export default class TascalPlugin extends Plugin {
 
     private async handleAddEventResult(ctx: { file: any; dateStr: string }, result: AddEventResult) {
 	const newEvent = createManualEvent(result.summary, result.start, result.end);
+	let noteOutcome: string | null = null;
 
 	// Create linked note immediately if requested
 	if (result.createNote && result.templateId) {
 	    const tmpl = (this.settings.eventTemplates || []).find(t => t.id === result.templateId);
 	    if (tmpl) {
-		const linkedFile = await createLinkedNote(this.app, tmpl, ctx.dateStr, this.settings.timezone);
-		newEvent.linkedNotePath = linkedFile.path;
-		newEvent.linkedNoteMarkdown = this.app.fileManager.generateMarkdownLink(linkedFile, ctx.file.path);
-		newEvent.templateId = result.templateId;
+		try {
+		    const linkedNote = await createLinkedNote(this.app, tmpl, ctx.dateStr, this.settings.timezone);
+		    newEvent.linkedNotePath = linkedNote.file.path;
+		    newEvent.linkedNoteMarkdown = this.app.fileManager.generateMarkdownLink(linkedNote.file, ctx.file.path);
+		    newEvent.templateId = result.templateId;
+		    noteOutcome = linkedNote.status === "created"
+			? `Created note ${linkedNote.file.basename}.`
+			: `Reused existing note ${linkedNote.file.basename}.`;
+		} catch (error) {
+		    console.error("Failed to create linked note:", error);
+		    noteOutcome = "Linked note creation failed.";
+		}
 	    }
 	}
 
@@ -360,7 +394,11 @@ export default class TascalPlugin extends Plugin {
 	await saveDayStore(this.app, ctx.dateStr, store);
 
 	await this.reRenderTimeline(ctx.file, ctx.dateStr, store);
-	new Notice(`Added: ${result.summary}`);
+	const parts = [`Added ${result.start}-${result.end} ${result.summary}.`];
+	if (noteOutcome) {
+	    parts.push(noteOutcome);
+	}
+	new Notice(parts.join(" "), 7000);
     }
 
     async editEventCommand() {
@@ -389,65 +427,44 @@ export default class TascalPlugin extends Plugin {
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
 			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 			new Notice(`Deleted: ${event.summary}`);
+		    },
+		    () => {
+			const reschedModal = new RescheduleModal(
+			    this.app, event, this.settings.timezone,
+			    async (targetDate, newStart) => {
+				const start = newStart ? formatTime(newStart) : event.start;
+				const durationMinutes = timeToMinutes(event.end) - timeToMinutes(event.start);
+				const startDt = DateTime.fromFormat(start, "HH:mm");
+				const end = startDt.plus({ minutes: durationMinutes }).toFormat("HH:mm");
+
+				let targetStore = await loadDayStore(this.app, targetDate);
+				const rescheduledEvent: StoredEvent = {
+				    id: crypto.randomUUID(),
+				    summary: event.summary,
+				    start,
+				    end,
+				    source: "rescheduled",
+				    sourceRef: ctx.dateStr,
+				    done: false,
+				    timeTracking: [],
+				};
+				targetStore = addEvent(targetStore, rescheduledEvent);
+				await saveDayStore(this.app, targetDate, targetStore);
+
+				let updatedStore = this.suppressAndRemove(store, event);
+				await saveDayStore(this.app, ctx.dateStr, updatedStore);
+
+				await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+				new Notice(`Rescheduled "${event.summary}" to ${targetDate} at ${start}.`, 7000);
+			    }
+			);
+			reschedModal.open();
 		    }
 		);
 		editModal.open();
 	    },
 	    "Select Event to Edit",
 	    "Edit"
-	);
-	selectModal.open();
-    }
-
-    async rescheduleEventCommand() {
-	const ctx = this.getActiveDateContext();
-	if (!ctx) return;
-
-	const store = await loadDayStore(this.app, ctx.dateStr);
-	if (store.events.length === 0) {
-	    new Notice("No events to reschedule.");
-	    return;
-	}
-
-	const selectModal = new EventSelectionModal(
-	    this.app, store.events,
-	    (event) => {
-		const reschedModal = new RescheduleModal(
-		    this.app, event, this.settings.timezone,
-		    async (targetDate, newStart) => {
-			// Calculate new start/end
-			const start = newStart ? formatTime(newStart) : event.start;
-			const durationMinutes = timeToMinutes(event.end) - timeToMinutes(event.start);
-			const startDt = DateTime.fromFormat(start, "HH:mm");
-			const end = startDt.plus({ minutes: durationMinutes }).toFormat("HH:mm");
-
-			// Add to target date's store
-			let targetStore = await loadDayStore(this.app, targetDate);
-			const rescheduledEvent: StoredEvent = {
-			    id: crypto.randomUUID(),
-			    summary: event.summary,
-			    start,
-			    end,
-			    source: "rescheduled",
-			    sourceRef: ctx.dateStr,
-			    done: false,
-			    timeTracking: [],
-			};
-			targetStore = addEvent(targetStore, rescheduledEvent);
-			await saveDayStore(this.app, targetDate, targetStore);
-
-			// Remove from source date's store (with suppression so recurring doesn't re-add)
-			let updatedStore = this.suppressAndRemove(store, event);
-			await saveDayStore(this.app, ctx.dateStr, updatedStore);
-
-			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-			new Notice(`Rescheduled "${event.summary}" to ${targetDate}`);
-		    }
-		);
-		reschedModal.open();
-	    },
-	    "Select Event to Reschedule",
-	    "Reschedule"
 	);
 	selectModal.open();
     }
@@ -511,7 +528,7 @@ export default class TascalPlugin extends Plugin {
 			oldStore = removeEvent(oldStore, entry.event.id);
 			await saveDayStore(this.app, entry.targetDate, oldStore);
 
-			new Notice(`Rescheduled "${entry.event.summary}" from ${entry.targetDate} to ${newTargetDate}`);
+			new Notice(`Rescheduled "${entry.event.summary}" from ${entry.targetDate} to ${newTargetDate} at ${start}.`, 7000);
 		    }
 		);
 		reschedModal.open();
@@ -522,6 +539,90 @@ export default class TascalPlugin extends Plugin {
 		store = removeEvent(store, entry.event.id);
 		await saveDayStore(this.app, entry.targetDate, store);
 		new Notice(`Deleted rescheduled event: ${entry.event.summary}`);
+	    }
+	);
+	modal.open();
+    }
+
+    async addUnscheduledTaskCommand() {
+	const ctx = this.getActiveDateContext();
+	if (!ctx) return;
+
+	const modal = new AddUnscheduledTaskModal(this.app, async (result) => {
+	    let store = await loadDayStore(this.app, ctx.dateStr);
+	    store = addUnscheduledTask(store, createUnscheduledTask(result.summary, result.estimateMinutes));
+	    await saveDayStore(this.app, ctx.dateStr, store);
+	    await this.reRenderTimeline(ctx.file, ctx.dateStr, store);
+	    new Notice(`Added unscheduled task: ${result.summary}`, 6000);
+	});
+	modal.open();
+    }
+
+    async manageUnscheduledTasksCommand() {
+	const ctx = this.getActiveDateContext();
+	if (!ctx) return;
+
+	const store = await loadDayStore(this.app, ctx.dateStr);
+	const tasks = store.unscheduledTasks || [];
+	if (tasks.length === 0) {
+	    new Notice("No unscheduled tasks.");
+	    return;
+	}
+
+	const modal = new UnscheduledTasksModal(
+	    this.app,
+	    tasks,
+	    async (task) => {
+		let updatedStore = updateUnscheduledTask(store, task.id, { done: !task.done });
+		await saveDayStore(this.app, ctx.dateStr, updatedStore);
+		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+		new Notice(`${task.done ? "Reopened" : "Completed"} unscheduled task: ${task.summary}`, 6000);
+	    },
+	    (task) => {
+		const moveModal = new RescheduleModal(
+		    this.app,
+		    {
+			id: task.id,
+			summary: task.summary,
+			start: "09:00",
+			end: "09:00",
+			source: "manual",
+			done: task.done,
+			timeTracking: [],
+		    },
+		    this.settings.timezone,
+		    async (targetDate) => {
+			let currentStore = await loadDayStore(this.app, ctx.dateStr);
+			currentStore = removeUnscheduledTask(currentStore, task.id);
+			await saveDayStore(this.app, ctx.dateStr, currentStore);
+
+			let targetStore = await loadDayStore(this.app, targetDate);
+			targetStore = addUnscheduledTask(targetStore, createUnscheduledTask(task.summary, task.estimateMinutes));
+			await saveDayStore(this.app, targetDate, targetStore);
+
+			await this.reRenderTimeline(ctx.file, ctx.dateStr, currentStore);
+			new Notice(`Moved "${task.summary}" to ${targetDate}.`, 7000);
+		    }
+		);
+		moveModal.open();
+	    },
+	    (task) => {
+		const scheduleModal = new ScheduleUnscheduledTaskModal(this.app, task, async (start, durationMinutes) => {
+		    const end = DateTime.fromFormat(start, "HH:mm").plus({ minutes: durationMinutes }).toFormat("HH:mm");
+		    let updatedStore = await loadDayStore(this.app, ctx.dateStr);
+		    updatedStore = removeUnscheduledTask(updatedStore, task.id);
+		    updatedStore = addEvent(updatedStore, createManualEvent(task.summary, start, end));
+		    await saveDayStore(this.app, ctx.dateStr, updatedStore);
+		    await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+		    new Notice(`Scheduled "${task.summary}" for ${start}-${end}.`, 7000);
+		});
+		scheduleModal.open();
+	    },
+	    async (task) => {
+		let updatedStore = removeUnscheduledTask(store, task.id);
+		await saveDayStore(this.app, ctx.dateStr, updatedStore);
+		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+		new Notice(`Deleted unscheduled task: ${task.summary}`, 6000);
 	    }
 	);
 	modal.open();

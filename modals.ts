@@ -1,8 +1,9 @@
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Notice, Setting, TextComponent, ToggleComponent } from "obsidian";
 import { DateTime } from "luxon";
-import { StoredEvent, DayStore, EventTemplate } from "./types";
+import { StoredEvent, DayStore, EventTemplate, UnscheduledTask } from "./types";
 import { formatTime, parseDuration } from "./utils";
-import { expandTemplate, findTemplateByShortcode } from "./templates";
+import { expandTemplate, findTemplateByShortcode, resolveLinkedNotePath } from "./templates";
+import { validateIsoDate, validateTime, validateTimeRange } from "./validation";
 
 // ===== Event Selection Modal (for tracking, editing, deleting, rescheduling) =====
 
@@ -92,6 +93,11 @@ export interface AddEventResult {
     createNote?: boolean;
 }
 
+export interface AddUnscheduledTaskResult {
+    summary: string;
+    estimateMinutes?: number;
+}
+
 export class AddEventModal extends Modal {
     private onSubmit: (result: AddEventResult) => void;
     private timezone: string;
@@ -148,6 +154,61 @@ export class AddEventModal extends Modal {
 	let durationVal = "";
 	let selectedTemplate: EventTemplate | null = null;
 	let createNote = false;
+	let summaryInput: TextComponent | null = null;
+	let startInput: TextComponent | null = null;
+	let endInput: TextComponent | null = null;
+	let createNoteToggle: ToggleComponent | null = null;
+
+	const previewBox = contentEl.createDiv({ cls: "tascal-preview-box" });
+	const previewText = previewBox.createEl("div", { cls: "tascal-preview-line" });
+	const previewMeta = previewBox.createEl("div", { cls: "tascal-preview-line tascal-preview-line-muted" });
+
+	const refreshPreview = () => {
+	    if (!summary.trim() || !startVal.trim()) {
+		previewText.setText("Event preview will appear once summary and time are valid.");
+		previewMeta.setText(selectedTemplate ? "Template selected." : "Manual event.");
+		return;
+	    }
+
+	    const startValidation = validateTime(startVal);
+	    if (!startValidation.ok || !startValidation.normalized) {
+		previewText.setText("Enter a valid start time in HH:MM format.");
+		previewMeta.setText("");
+		return;
+	    }
+
+	    let finalEnd = "";
+	    if (endVal) {
+		const rangeValidation = validateTimeRange(startValidation.normalized, endVal);
+		if (!rangeValidation.ok || !rangeValidation.normalized) {
+		    previewText.setText("End time must be after start time.");
+		    previewMeta.setText("");
+		    return;
+		}
+		finalEnd = rangeValidation.normalized.end;
+	    } else if (durationVal) {
+		const minutes = parseDuration(durationVal);
+		if (minutes <= 0) {
+		    previewText.setText("Duration must be a positive value like 30m or 1h.");
+		    previewMeta.setText("");
+		    return;
+		}
+		finalEnd = DateTime.fromFormat(startValidation.normalized, "HH:mm").plus({ minutes }).toFormat("HH:mm");
+	    } else {
+		previewText.setText("Enter an end time or duration.");
+		previewMeta.setText("");
+		return;
+	    }
+
+	    previewText.setText(`${startValidation.normalized}-${finalEnd} ${summary.trim()}`);
+	    if (selectedTemplate && createNote) {
+		previewMeta.setText(`Linked note: ${resolveLinkedNotePath(selectedTemplate, this.dateStr, this.timezone)}`);
+	    } else if (selectedTemplate) {
+		previewMeta.setText("Template selected without linked note creation.");
+	    } else {
+		previewMeta.setText("Manual event.");
+	    }
+	};
 
 	// Template dropdown (only if templates exist)
 	if (this.templates.length > 0) {
@@ -161,44 +222,80 @@ export class AddEventModal extends Modal {
 		    dd.onChange(v => {
 			selectedTemplate = this.templates.find(t => t.id === v) || null;
 			if (selectedTemplate) {
-			    // Pre-fill fields from template
 			    const expanded = expandTemplate(selectedTemplate, this.dateStr, this.timezone);
 			    summary = expanded.summary;
 			    startVal = expanded.start;
 			    endVal = expanded.end;
+			    durationVal = "";
 			    createNote = selectedTemplate.createNote || false;
-			    // Re-render form would be complex; user can override in fields
+			    summaryInput?.setValue(summary);
+			    startInput?.setValue(startVal);
+			    endInput?.setValue(endVal);
+			    createNoteToggle?.setValue(createNote);
+			} else {
+			    createNote = false;
+			    createNoteToggle?.setValue(false);
 			}
+			refreshPreview();
 		    });
 		});
 	}
 
-	const summaryField = new Setting(contentEl)
+	new Setting(contentEl)
 	    .setName("Summary")
-	    .addText(text => text
-		.setPlaceholder("Event name")
-		.onChange(v => { summary = v; }));
+	    .addText(text => {
+		summaryInput = text;
+		text
+		    .setPlaceholder("Event name")
+		    .onChange(v => {
+			summary = v;
+			refreshPreview();
+		    });
+	    });
 
 	new Setting(contentEl)
 	    .setName("Start")
-	    .addText(text => text
-		.setPlaceholder("09:00")
-		.onChange(v => { startVal = v; }));
+	    .addText(text => {
+		startInput = text;
+		text
+		    .setPlaceholder("09:00")
+		    .onChange(v => {
+			startVal = v;
+			refreshPreview();
+		    });
+	    });
 
 	new Setting(contentEl)
 	    .setName("End (or duration)")
 	    .setDesc("End time like 10:00 or duration like 1h30m")
-	    .addText(text => text
-		.setPlaceholder("10:00 or 1h30m")
-		.onChange(v => {
-		    if (v.match(/^\d{1,2}:\d{2}$/)) {
-			endVal = v;
-			durationVal = "";
-		    } else {
-			durationVal = v;
-			endVal = "";
-		    }
-		}));
+	    .addText(text => {
+		endInput = text;
+		text
+		    .setPlaceholder("10:00 or 1h30m")
+		    .onChange(v => {
+			if (v.match(/^\d{1,2}:\d{2}$/)) {
+			    endVal = v;
+			    durationVal = "";
+			} else {
+			    durationVal = v;
+			    endVal = "";
+			}
+			refreshPreview();
+		    });
+	    });
+
+	new Setting(contentEl)
+	    .setName("Create linked note")
+	    .setDesc("Uses the selected template path when available.")
+	    .addToggle(toggle => {
+		createNoteToggle = toggle;
+		toggle
+		    .setValue(createNote)
+		    .onChange(v => {
+			createNote = v;
+			refreshPreview();
+		    });
+	    });
 
 	// Submit button
 	const btnContainer = contentEl.createEl("div", { cls: "tascal-btn-row" });
@@ -234,7 +331,12 @@ export class AddEventModal extends Modal {
 	    let formattedEnd: string;
 
 	    if (endVal) {
-		formattedEnd = formatTime(endVal);
+		const rangeValidation = validateTimeRange(formattedStart, endVal);
+		if (!rangeValidation.ok || !rangeValidation.normalized) {
+		    new Notice("End time must be after start time.");
+		    return;
+		}
+		formattedEnd = rangeValidation.normalized.end;
 	    } else if (durationVal) {
 		const minutes = parseDuration(durationVal);
 		if (minutes <= 0) {
@@ -266,6 +368,7 @@ export class AddEventModal extends Modal {
 
 	// Focus quick-add on open
 	setTimeout(() => quickInput.focus(), 50);
+	refreshPreview();
     }
 
     private parseQuickAdd(text: string): AddEventResult | null {
@@ -317,23 +420,93 @@ export class AddEventModal extends Modal {
     }
 }
 
+export class AddUnscheduledTaskModal extends Modal {
+    private onSubmit: (result: AddUnscheduledTaskResult) => void;
+
+    constructor(app: App, onSubmit: (result: AddUnscheduledTaskResult) => void) {
+	super(app);
+	this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+	const { contentEl } = this;
+	contentEl.empty();
+	contentEl.addClass("tascal-modal");
+
+	contentEl.createEl("h2", { text: "Add Unscheduled Task" });
+
+	let summary = "";
+	let estimate = "";
+
+	new Setting(contentEl)
+	    .setName("Summary")
+	    .addText(text => text
+		.setPlaceholder("Send invoice")
+		.onChange(v => { summary = v; }));
+
+	new Setting(contentEl)
+	    .setName("Estimate (optional)")
+	    .setDesc("Examples: 20m, 45m, 1h")
+	    .addText(text => text
+		.setPlaceholder("20m")
+		.onChange(v => { estimate = v; }));
+
+	const btnContainer = contentEl.createEl("div", { cls: "tascal-btn-row" });
+	const submitBtn = btnContainer.createEl("button", {
+	    text: "Add Task",
+	    cls: "mod-cta"
+	});
+	submitBtn.addEventListener("click", () => {
+	    if (!summary.trim()) {
+		new Notice("Summary is required.");
+		return;
+	    }
+
+	    const estimateMinutes = estimate.trim() ? parseDuration(estimate.trim()) : undefined;
+	    if (estimate.trim() && (!estimateMinutes || estimateMinutes <= 0)) {
+		new Notice("Estimate must be a value like 20m or 1h.");
+		return;
+	    }
+
+	    this.onSubmit({
+		summary: summary.trim(),
+		estimateMinutes,
+	    });
+	    this.close();
+	});
+
+	const cancelBtn = btnContainer.createEl("button", {
+	    text: "Cancel",
+	    cls: "cancel-button"
+	});
+	cancelBtn.addEventListener("click", () => this.close());
+    }
+
+    onClose() {
+	this.contentEl.empty();
+    }
+}
+
 // ===== Edit Event Modal =====
 
 export class EditEventModal extends Modal {
     private event: StoredEvent;
     private onSave: (updates: Partial<Pick<StoredEvent, "summary" | "start" | "end" | "done">>) => void;
     private onDelete: () => void;
+    private onReschedule?: () => void;
 
     constructor(
 	app: App,
 	event: StoredEvent,
 	onSave: (updates: Partial<Pick<StoredEvent, "summary" | "start" | "end" | "done">>) => void,
-	onDelete: () => void
+	onDelete: () => void,
+	onReschedule?: () => void
     ) {
 	super(app);
 	this.event = event;
 	this.onSave = onSave;
 	this.onDelete = onDelete;
+	this.onReschedule = onReschedule;
     }
 
     onOpen() {
@@ -394,6 +567,16 @@ export class EditEventModal extends Modal {
 	    this.close();
 	});
 
+	if (this.onReschedule) {
+	    const rescheduleBtn = btnContainer.createEl("button", {
+		text: "Reschedule",
+	    });
+	    rescheduleBtn.addEventListener("click", () => {
+		this.close();
+		this.onReschedule!();
+	    });
+	}
+
 	const cancelBtn = btnContainer.createEl("button", {
 	    text: "Cancel",
 	    cls: "cancel-button"
@@ -449,19 +632,56 @@ export class RescheduleModal extends Modal {
 	let targetDate = DateTime.now().setZone(this.timezone).plus({ days: 1 }).toISODate()!;
 	let newStart = "";
 
+	const previewBox = contentEl.createDiv({ cls: "tascal-preview-box" });
+	const previewText = previewBox.createEl("div", { cls: "tascal-preview-line" });
+	const previewMeta = previewBox.createEl("div", { cls: "tascal-preview-line tascal-preview-line-muted" });
+
+	const refreshPreview = () => {
+	    const dateValidation = validateIsoDate(targetDate);
+	    if (!dateValidation.ok || !dateValidation.normalized) {
+		previewText.setText("Enter a valid target date.");
+		previewMeta.setText("");
+		return;
+	    }
+
+	    let start = this.event.start;
+	    if (newStart.trim()) {
+		const startValidation = validateTime(newStart);
+		if (!startValidation.ok || !startValidation.normalized) {
+		    previewText.setText("New start time must use HH:MM.");
+		    previewMeta.setText("");
+		    return;
+		}
+		start = startValidation.normalized;
+	    }
+
+	    const durationMinutes =
+		(DateTime.fromFormat(this.event.end, "HH:mm").toMillis() - DateTime.fromFormat(this.event.start, "HH:mm").toMillis()) / 60000;
+	    const end = DateTime.fromFormat(start, "HH:mm").plus({ minutes: durationMinutes }).toFormat("HH:mm");
+
+	    previewText.setText(`Move to ${dateValidation.normalized} at ${start}-${end}`);
+	    previewMeta.setText(`Original: ${this.event.start}-${this.event.end}`);
+	};
+
 	new Setting(contentEl)
 	    .setName("Target date")
 	    .addText(text => text
 		.setPlaceholder("YYYY-MM-DD")
 		.setValue(targetDate)
-		.onChange(v => { targetDate = v; }));
+		.onChange(v => {
+		    targetDate = v;
+		    refreshPreview();
+		}));
 
 	new Setting(contentEl)
 	    .setName("New start time (optional)")
 	    .setDesc("Leave empty to keep the same time")
 	    .addText(text => text
 		.setPlaceholder(this.event.start)
-		.onChange(v => { newStart = v; }));
+		.onChange(v => {
+		    newStart = v;
+		    refreshPreview();
+		}));
 
 	const btnContainer = contentEl.createEl("div", { cls: "tascal-btn-row" });
 
@@ -470,11 +690,104 @@ export class RescheduleModal extends Modal {
 	    cls: "mod-cta"
 	});
 	submitBtn.addEventListener("click", () => {
-	    if (!targetDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+	    const dateValidation = validateIsoDate(targetDate);
+	    if (!dateValidation.ok || !dateValidation.normalized) {
 		new Notice("Invalid date format. Use YYYY-MM-DD.");
 		return;
 	    }
-	    this.onReschedule(targetDate, newStart || undefined);
+	    if (newStart.trim()) {
+		const timeValidation = validateTime(newStart);
+		if (!timeValidation.ok || !timeValidation.normalized) {
+		    new Notice("Invalid time format. Use HH:MM.");
+		    return;
+		}
+		this.onReschedule(dateValidation.normalized, timeValidation.normalized);
+		this.close();
+		return;
+	    }
+	    this.onReschedule(dateValidation.normalized, undefined);
+	    this.close();
+	});
+
+	const cancelBtn = btnContainer.createEl("button", {
+	    text: "Cancel",
+	    cls: "cancel-button"
+	});
+	cancelBtn.addEventListener("click", () => this.close());
+	refreshPreview();
+    }
+
+    onClose() {
+	this.contentEl.empty();
+    }
+}
+
+// ===== Rescheduled Events Modal =====
+
+export interface RescheduledEventEntry {
+    event: StoredEvent;
+    targetDate: string; // the date this event is scheduled on
+}
+
+export interface UnscheduledTaskEntry {
+    task: UnscheduledTask;
+}
+
+export class ScheduleUnscheduledTaskModal extends Modal {
+    private task: UnscheduledTask;
+    private onSubmit: (start: string, durationMinutes: number) => void;
+
+    constructor(app: App, task: UnscheduledTask, onSubmit: (start: string, durationMinutes: number) => void) {
+	super(app);
+	this.task = task;
+	this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+	const { contentEl } = this;
+	contentEl.empty();
+	contentEl.addClass("tascal-modal");
+
+	contentEl.createEl("h2", { text: "Schedule Task" });
+	contentEl.createEl("p", {
+	    text: this.task.summary,
+	    cls: "modal-description"
+	});
+
+	let start = "";
+	let duration = this.task.estimateMinutes ? `${this.task.estimateMinutes}m` : "";
+
+	new Setting(contentEl)
+	    .setName("Start")
+	    .addText(text => text
+		.setPlaceholder("09:00")
+		.onChange(v => { start = v; }));
+
+	new Setting(contentEl)
+	    .setName("Duration")
+	    .setDesc("Examples: 20m, 45m, 1h")
+	    .addText(text => text
+		.setPlaceholder("30m")
+		.setValue(duration)
+		.onChange(v => { duration = v; }));
+
+	const btnContainer = contentEl.createEl("div", { cls: "tascal-btn-row" });
+	const submitBtn = btnContainer.createEl("button", {
+	    text: "Schedule",
+	    cls: "mod-cta"
+	});
+	submitBtn.addEventListener("click", () => {
+	    const startValidation = validateTime(start);
+	    if (!startValidation.ok || !startValidation.normalized) {
+		new Notice("Start time must use HH:MM.");
+		return;
+	    }
+	    const durationMinutes = parseDuration(duration);
+	    if (!durationMinutes || durationMinutes <= 0) {
+		new Notice("Duration must be a value like 20m or 1h.");
+		return;
+	    }
+	    this.onSubmit(startValidation.normalized, durationMinutes);
 	    this.close();
 	});
 
@@ -490,11 +803,93 @@ export class RescheduleModal extends Modal {
     }
 }
 
-// ===== Rescheduled Events Modal =====
+export class UnscheduledTasksModal extends Modal {
+    private tasks: UnscheduledTask[];
+    private onToggle: (task: UnscheduledTask) => void;
+    private onMove: (task: UnscheduledTask) => void;
+    private onSchedule: (task: UnscheduledTask) => void;
+    private onDelete: (task: UnscheduledTask) => void;
 
-export interface RescheduledEventEntry {
-    event: StoredEvent;
-    targetDate: string; // the date this event is scheduled on
+    constructor(
+	app: App,
+	tasks: UnscheduledTask[],
+	onToggle: (task: UnscheduledTask) => void,
+	onMove: (task: UnscheduledTask) => void,
+	onSchedule: (task: UnscheduledTask) => void,
+	onDelete: (task: UnscheduledTask) => void
+    ) {
+	super(app);
+	this.tasks = tasks;
+	this.onToggle = onToggle;
+	this.onMove = onMove;
+	this.onSchedule = onSchedule;
+	this.onDelete = onDelete;
+    }
+
+    onOpen() {
+	const { contentEl } = this;
+	contentEl.empty();
+	contentEl.addClass("tascal-modal");
+	contentEl.createEl("h2", { text: "Manage Unscheduled Tasks" });
+
+	const container = contentEl.createEl("div", { cls: "event-selection-container" });
+
+	if (this.tasks.length === 0) {
+	    container.createEl("p", {
+		text: "No unscheduled tasks.",
+		cls: "no-events-message"
+	    });
+	} else {
+	    for (const task of this.tasks) {
+		const taskDiv = container.createEl("div", { cls: "event-option" });
+		const summaryDiv = taskDiv.createEl("div", { cls: "event-summary" });
+		const estimate = task.estimateMinutes ? ` (${task.estimateMinutes}m)` : "";
+		summaryDiv.setText(`${task.summary}${estimate}`);
+
+		const btnGroup = taskDiv.createEl("div", { cls: "event-actions" });
+
+		const toggleBtn = btnGroup.createEl("button", {
+		    text: task.done ? "Reopen" : "Done",
+		    cls: "track-button"
+		});
+		toggleBtn.addEventListener("click", () => {
+		    this.onToggle(task);
+		    this.close();
+		});
+
+		const moveBtn = btnGroup.createEl("button", { text: "Move" });
+		moveBtn.addEventListener("click", () => {
+		    this.onMove(task);
+		    this.close();
+		});
+
+		const scheduleBtn = btnGroup.createEl("button", { text: "Schedule" });
+		scheduleBtn.addEventListener("click", () => {
+		    this.onSchedule(task);
+		    this.close();
+		});
+
+		const deleteBtn = btnGroup.createEl("button", {
+		    text: "Delete",
+		    cls: "tascal-delete-btn"
+		});
+		deleteBtn.addEventListener("click", () => {
+		    this.onDelete(task);
+		    this.close();
+		});
+	    }
+	}
+
+	const cancelBtn = contentEl.createEl("button", {
+	    text: "Close",
+	    cls: "cancel-button"
+	});
+	cancelBtn.addEventListener("click", () => this.close());
+    }
+
+    onClose() {
+	this.contentEl.empty();
+    }
 }
 
 export class RescheduledEventsModal extends Modal {

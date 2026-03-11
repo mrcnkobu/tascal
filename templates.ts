@@ -76,13 +76,23 @@ export function resolveLinkedNotePath(
  * Create a linked note at the resolved path, populating it with template content.
  * Creates intermediate folders as needed. Returns the created TFile.
  */
+export interface LinkedNoteResult {
+    file: TFile;
+    status: "created" | "existing";
+}
+
 export async function createLinkedNote(
     app: App,
     template: EventTemplate,
     dateStr: string,
     timezone: string
-): Promise<TFile> {
+): Promise<LinkedNoteResult> {
     const notePath = resolveLinkedNotePath(template, dateStr, timezone);
+
+    const existing = app.vault.getAbstractFileByPath(notePath);
+    if (existing instanceof TFile) {
+	return { file: existing, status: "existing" };
+    }
 
     // Ensure folder exists
     const folderPath = notePath.substring(0, notePath.lastIndexOf("/"));
@@ -104,7 +114,8 @@ export async function createLinkedNote(
 	}
     }
 
-    return await app.vault.create(notePath, content);
+    const file = await app.vault.create(notePath, content);
+    return { file, status: "created" };
 }
 
 export function findTemplateByShortcode(templates: EventTemplate[], shortcode: string): EventTemplate | undefined {

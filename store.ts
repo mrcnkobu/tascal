@@ -1,6 +1,6 @@
 import { App } from "obsidian";
 import { DateTime } from "luxon";
-import { StoredEvent, DayStore, TascalSettings, RecurringRule, TimeTrackingEntry } from "./types";
+import { StoredEvent, DayStore, TascalSettings, RecurringRule, TimeTrackingEntry, UnscheduledTask } from "./types";
 import { formatDuration } from "./utils";
 
 const DAYS_DIR = ".tascal/days";
@@ -10,7 +10,7 @@ function dayStorePath(dateStr: string): string {
 }
 
 function emptyDayStore(): DayStore {
-    return { version: 1, events: [] };
+    return { version: 1, events: [], unscheduledTasks: [] };
 }
 
 // ===== Persistence =====
@@ -29,6 +29,9 @@ export async function loadDayStore(app: App, dateStr: string): Promise<DayStore>
 	if (data.version !== 1) {
 	    console.warn(`DayStore ${dateStr}: unknown version ${data.version}, treating as empty`);
 	    return emptyDayStore();
+	}
+	if (!data.unscheduledTasks) {
+	    data.unscheduledTasks = [];
 	}
 	return data;
     } catch (e) {
@@ -73,10 +76,38 @@ export function addSuppression(store: DayStore, key: string): DayStore {
     return { ...store, suppressions: [...existing, key] };
 }
 
+export function addUnscheduledTask(store: DayStore, task: UnscheduledTask): DayStore {
+    return { ...store, unscheduledTasks: [...(store.unscheduledTasks || []), task] };
+}
+
+export function updateUnscheduledTask(
+    store: DayStore,
+    id: string,
+    updates: Partial<Omit<UnscheduledTask, "id">>
+): DayStore {
+    return {
+	...store,
+	unscheduledTasks: (store.unscheduledTasks || []).map(task =>
+	    task.id === id ? { ...task, ...updates } : task
+	),
+    };
+}
+
+export function removeUnscheduledTask(store: DayStore, id: string): DayStore {
+    return {
+	...store,
+	unscheduledTasks: (store.unscheduledTasks || []).filter(task => task.id !== id),
+    };
+}
+
 // ===== Queries =====
 
 export function findEventById(store: DayStore, id: string): StoredEvent | undefined {
     return store.events.find(ev => ev.id === id);
+}
+
+export function findUnscheduledTaskById(store: DayStore, id: string): UnscheduledTask | undefined {
+    return (store.unscheduledTasks || []).find(task => task.id === id);
 }
 
 export function findEventBySourceRef(
@@ -175,6 +206,15 @@ export function createManualEvent(summary: string, start: string, end: string): 
     };
 }
 
+export function createUnscheduledTask(summary: string, estimateMinutes?: number): UnscheduledTask {
+    return {
+	id: crypto.randomUUID(),
+	summary,
+	done: false,
+	estimateMinutes,
+    };
+}
+
 export function createRecurringEvent(summary: string, start: string, end: string, ruleId: string): StoredEvent {
     return {
 	id: crypto.randomUUID(),
@@ -265,7 +305,8 @@ export function renderTimeline(
     events: StoredEvent[],
     settings: TascalSettings,
     dateStr: string,
-    currentTrackingEventId: string | null
+    currentTrackingEventId: string | null,
+    lastCalendarSync?: string
 ): string[] {
     const sorted = sortEventsByTime(events);
     const date = DateTime.fromISO(dateStr, { zone: settings.timezone });
@@ -285,8 +326,13 @@ export function renderTimeline(
     let totalTrackedMinutes = 0;
 
     const eventLines: string[] = [];
+    let previousEnd: string | null = null;
 
     for (const ev of sorted) {
+	const overlapMinutes = previousEnd && ev.start < previousEnd
+	    ? timeToMinutes(previousEnd) - timeToMinutes(ev.start)
+	    : 0;
+
 	// Insert free-time gap
 	if (ev.start > cursor) {
 	    eventLines.push(`- *${cursor}–${ev.start} (free)*`);
@@ -311,20 +357,10 @@ export function renderTimeline(
 	    displaySummary = displaySummary.replace(/^\(([^)]+)\)/, "*($1)*");
 	}
 	if (ev.source === "rescheduled" && ev.sourceRef) {
-	    displaySummary += ` *(from ${ev.sourceRef})*`;
+	    displaySummary += ` *· rs:${ev.sourceRef}*`;
 	}
 	if (ev.source === "recurring") {
-	    const rule = ev.sourceRef
-		? settings.recurringRules?.find(r => r.id === ev.sourceRef)
-		: undefined;
-	    if (rule) {
-		const desc = rule.recurrence.type === "weekly"
-		    ? rule.recurrence.days.join(", ")
-		    : `day ${rule.recurrence.day}`;
-		displaySummary += ` *(${rule.recurrence.type}: ${desc})*`;
-	    } else {
-		displaySummary += " *(recurring)*";
-	    }
+	    displaySummary += " *· rc*";
 	}
 	if (ev.linkedNoteMarkdown) {
 	    displaySummary += ` ${ev.linkedNoteMarkdown}`;
@@ -334,12 +370,19 @@ export function renderTimeline(
 	    const displayName = vaultPath.split("/").pop()!;
 	    displaySummary += ` [[${vaultPath}|${displayName}]]`;
 	}
+	if (isTracking) {
+	    displaySummary += " *· tracking*";
+	}
+	if (overlapMinutes > 0) {
+	    displaySummary += ` *· overlap ${formatDuration(overlapMinutes)}*`;
+	}
 
 	eventLines.push(`- [${checked}]${trackingSymbol} ${ev.start}–${ev.end} ${displaySummary}${trackingInfo}`);
 
 	if (ev.end > cursor) {
 	    cursor = ev.end;
 	}
+	previousEnd = previousEnd && previousEnd > ev.end ? previousEnd : ev.end;
 
 	// Stats
 	const blockMinutes = timeToMinutes(ev.end) - timeToMinutes(ev.start);
@@ -370,7 +413,27 @@ export function renderTimeline(
     const elapsedTimeStr = formatDuration(elapsedMinutes);
     const totalTrackedStr = formatDuration(totalTrackedMinutes);
 
-    const statsLine = `**${completedTasks}/${totalTasks}** done | ${elapsedTimeStr}/${totalTimeStr} | **Total TT: ${totalTrackedStr}**`;
+    const statsParts = [
+	`**${completedTasks}/${totalTasks}** done`,
+	`${elapsedTimeStr}/${totalTimeStr}`,
+	`**TT ${totalTrackedStr}**`,
+    ];
+    const hasCalendarEvents = sorted.some(event => event.source === "calendar");
+    if (hasCalendarEvents) {
+	if (!lastCalendarSync) {
+	    statsParts.push("*sync missing*");
+	} else {
+	    const syncTime = DateTime.fromISO(lastCalendarSync, { zone: settings.timezone });
+	    const hoursSinceSync = DateTime.now().setZone(settings.timezone).diff(syncTime, "hours").hours;
+	    if (date.hasSame(DateTime.now().setZone(settings.timezone), "day") && hoursSinceSync >= 6) {
+		statsParts.push("*sync stale*");
+	    } else {
+		statsParts.push(`*sync ${syncTime.toFormat("HH:mm")}*`);
+	    }
+	}
+    }
+
+    const statsLine = statsParts.join(" | ");
 
     return [statsLine, "", ...eventLines];
 }
@@ -388,11 +451,13 @@ export function syncCheckboxState(store: DayStore, renderedLines: string[]): Day
 	const isDone = m[1] === "x";
 	const startStr = m[3];
 	// Strip rendering decorations to recover the stored summary
-	const summary = m[5].trim()
-	    .replace(/\s*\[\[[^\]]+\]\]$/, "")    // trailing [[wiki-link]] or [[path|alias]] (linked note)
-	    .replace(/\s*\[[^\]]*\]\([^)]+\)$/, "") // trailing [text](path) markdown link (linked note)
-	    .replace(/\s*\*\([^)]+\)\*$/, "")     // trailing italic annotations (rescheduled, recurring)
-	    .replace(/^\*\(([^)]+)\)\*/, "($1)"); // calendar name italics
+	let summary = m[5].trim();
+	summary = summary.replace(/\s*\*· tracking\*$/, "");
+	summary = summary.replace(/\s*\[\[[^\]]+\]\]$/, "");
+	summary = summary.replace(/\s*\[[^\]]*\]\([^)]+\)$/, "");
+	summary = summary.replace(/\s*\*· overlap [^*]+\*$/, "");
+	summary = summary.replace(/\s*\*· (rs:[^*]+|rc)\*$/, "");
+	summary = summary.replace(/^\*\(([^)]+)\)\*/, "($1)");
 
 	// Match by start + summary (unique within a day)
 	const event = updated.events.find(
@@ -420,6 +485,34 @@ export async function listDayStoreDates(app: App): Promise<string[]> {
 	.filter(f => f.endsWith(".json"))
 	.map(f => f.replace(`${DAYS_DIR}/`, "").replace(".json", ""))
 	.sort();
+}
+
+export async function getLatestCalendarSync(app: App): Promise<string | null> {
+    const adapter = app.vault.adapter;
+
+    if (!(await adapter.exists(DAYS_DIR))) {
+	return null;
+    }
+
+    const listing = await adapter.list(DAYS_DIR);
+    let latest: string | null = null;
+
+    for (const file of listing.files) {
+	if (!file.endsWith(".json")) continue;
+
+	try {
+	    const text = await adapter.read(file);
+	    const data = JSON.parse(text) as DayStore;
+	    if (!data.lastCalendarSync) continue;
+	    if (!latest || data.lastCalendarSync > latest) {
+		latest = data.lastCalendarSync;
+	    }
+	} catch (error) {
+	    console.error(`Failed to inspect DayStore ${file}:`, error);
+	}
+    }
+
+    return latest;
 }
 
 // ===== Private helpers =====
