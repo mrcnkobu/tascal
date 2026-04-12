@@ -1,7 +1,7 @@
 import { Notice, Plugin, requestUrl } from 'obsidian';
 import ICAL from "ical.js";
 import { DateTime } from "luxon";
-import { StoredEvent, TascalSettings, DEFAULT_SETTINGS } from "./types";
+import { DayStore, SourceTaskCandidate, StoredEvent, TascalSettings, DEFAULT_SETTINGS, UnscheduledTask } from "./types";
 import { extractDateFromFilename, formatTime, parseDuration } from "./utils";
 import { extractEventsForDate } from "./calendar";
 import {
@@ -17,9 +17,31 @@ import {
     EventSelectionModal, AddEventModal, EditEventModal,
     RescheduleModal, RescheduledEventsModal,
     AddEventResult, RescheduledEventEntry, AddUnscheduledTaskModal,
-    UnscheduledTasksModal, ScheduleUnscheduledTaskModal
+    UnscheduledTasksModal, ScheduleUnscheduledTaskModal, ImportSourceTasksModal
 } from "./modals";
 import { createLinkedNote } from "./templates";
+import {
+    currentDateString,
+    markSourceTaskDone,
+    markSourceTaskImported,
+    markSourceTaskOpen,
+    resetSourceTaskAvailable,
+    scanSourceTaskCandidates,
+} from "./source-inbox";
+import {
+    createRegistryRecord,
+    findRegistryRecordById,
+    findRegistryRecordBySourceIdentity,
+    loadSourceTaskRegistry,
+    markRegistryAvailable,
+    markRegistryDone,
+    markRegistryImported,
+    markRegistryOpen,
+    markRegistryOrphaned,
+    saveSourceTaskRegistry,
+    upsertRegistryRecord,
+    updateRegistryLocation,
+} from "./source-registry";
 
 
 export default class TascalPlugin extends Plugin {
@@ -99,6 +121,7 @@ export default class TascalPlugin extends Plugin {
 		    // Build timeline
 		    const note = await this.app.vault.read(activeFile);
 		    const result = await buildTimeline(this.app, note, dateStr, this.settings);
+		    await this.applySourceTaskChanges(result.sourceTaskChanges, dateStr);
 
 		    await this.app.vault.modify(activeFile, result.updatedNote);
 		    const syncSummary = [
@@ -128,6 +151,7 @@ export default class TascalPlugin extends Plugin {
 		if (!dateStr) return new Notice("Note must start with a date (YYYY-MM-DD)");
 
 		const result = await buildTimeline(this.app, note, dateStr, this.settings);
+		await this.applySourceTaskChanges(result.sourceTaskChanges, dateStr);
 
 		for (const task of result.rescheduled) {
 		    await appendRescheduledTask(this.app, ".tascal", task.target, dateStr, task.line);
@@ -189,6 +213,12 @@ export default class TascalPlugin extends Plugin {
 	    callback: () => this.manageUnscheduledTasksCommand()
 	});
 
+	this.addCommand({
+	    id: "import-project-tasks",
+	    name: "Import project tasks",
+	    callback: () => this.importProjectTasksCommand()
+	});
+
     }
 
     async loadSettings() {
@@ -246,7 +276,7 @@ export default class TascalPlugin extends Plugin {
 	return { file, dateStr };
     }
 
-    private suppressAndRemove(store: import("./types").DayStore, event: StoredEvent): import("./types").DayStore {
+    private suppressAndRemove(store: DayStore, event: StoredEvent): DayStore {
 	let updated = removeEvent(store, event.id);
 	if (event.sourceRef) {
 	    updated = addSuppression(updated, event.sourceRef);
@@ -254,11 +284,216 @@ export default class TascalPlugin extends Plugin {
 	return updated;
     }
 
-    private async reRenderTimeline(file: any, dateStr: string, store: import("./types").DayStore) {
+    private async reRenderTimeline(file: any, dateStr: string, store: DayStore) {
 	const note = await this.app.vault.read(file);
 	await saveDayStore(this.app, dateStr, store);
-	const result = await buildTimeline(this.app, note, dateStr, this.settings);
+	const result = await buildTimeline(this.app, note, dateStr, this.settings, { skipCheckboxSync: true });
+	await this.applySourceTaskChanges(result.sourceTaskChanges, dateStr);
 	await this.app.vault.modify(file, result.updatedNote);
+    }
+
+    private nowIso(): string {
+	return DateTime.now().setZone(this.settings.timezone).toISO()!;
+    }
+
+    private async importProjectTasksCommand() {
+	const ctx = this.getActiveDateContext();
+	if (!ctx) return;
+
+	if (!this.settings.sourceDirectories || this.settings.sourceDirectories.length === 0) {
+	    new Notice("Configure project source directories in Tascal settings first.");
+	    return;
+	}
+
+	const candidates = await scanSourceTaskCandidates(
+	    this.app,
+	    this.settings.sourceDirectories,
+	    currentDateString(this.settings.timezone)
+	);
+
+	const registry = await loadSourceTaskRegistry(this.app);
+	const importable = candidates.filter((candidate) => {
+	    if (candidate.status !== "available") return false;
+	    if (!candidate.sourceTaskId) return true;
+	    const record = findRegistryRecordBySourceIdentity(registry, candidate.projectId, candidate.sourceTaskId);
+	    return !record || record.state !== "imported";
+	});
+
+	if (importable.length === 0) {
+	    new Notice("No importable project tasks found.");
+	    return;
+	}
+
+	const modal = new ImportSourceTasksModal(this.app, importable, async (candidate) => {
+	    const sourceTaskId = candidate.sourceTaskId || `tsk-${crypto.randomUUID().slice(0, 8)}`;
+	    const loadedAt = DateTime.now().setZone(this.settings.timezone).toFormat("yyyy-MM-dd HH:mm");
+	    const imported = await markSourceTaskImported(this.app, this.settings.sourceDirectories, candidate, sourceTaskId, loadedAt);
+	    if (!imported.ok) {
+		new Notice(`Failed to update source note for "${candidate.summary}".`);
+		return;
+	    }
+
+	    let registryState = await loadSourceTaskRegistry(this.app);
+	    let record = findRegistryRecordBySourceIdentity(registryState, candidate.projectId, sourceTaskId);
+	    const importedAt = this.nowIso();
+	    const newTask = createUnscheduledTask(candidate.summary, candidate.estimateMinutes, {
+		sourceRegistryId: record?.registryId,
+		sourceProjectId: candidate.projectId,
+		sourceTaskId,
+		sourceNotePath: imported.sourcePath,
+		sourceLoadedAt: loadedAt,
+	    });
+
+	    if (!record) {
+		record = createRegistryRecord(
+		    candidate.projectId,
+		    sourceTaskId,
+		    imported.sourcePath,
+		    candidate.summary,
+		    importedAt,
+		    { date: ctx.dateStr, kind: "unscheduled", itemId: newTask.id }
+		);
+		registryState = upsertRegistryRecord(registryState, record);
+		newTask.sourceRegistryId = record.registryId;
+	    } else {
+		registryState = markRegistryImported(
+		    registryState,
+		    record.registryId,
+		    imported.sourcePath,
+		    candidate.summary,
+		    importedAt,
+		    { date: ctx.dateStr, kind: "unscheduled", itemId: newTask.id }
+		);
+		newTask.sourceRegistryId = record.registryId;
+	    }
+
+	    await saveSourceTaskRegistry(this.app, registryState);
+
+	    let store = await loadDayStore(this.app, ctx.dateStr);
+	    store = addUnscheduledTask(store, newTask);
+	    await saveDayStore(this.app, ctx.dateStr, store);
+	    await this.reRenderTimeline(ctx.file, ctx.dateStr, store);
+	    new Notice(`Imported "${candidate.summary}" to today's unscheduled tasks.`, 7000);
+	});
+	modal.open();
+    }
+
+    private async applySourceTaskChanges(
+	changes: { registryId: string; done: boolean; kind: "event" | "unscheduled"; itemId: string }[],
+	dateStr: string
+    ) {
+	if (changes.length === 0) return;
+
+	let registry = await loadSourceTaskRegistry(this.app);
+	let dirty = false;
+
+	for (const change of changes) {
+	    const record = findRegistryRecordById(registry, change.registryId);
+	    if (!record) continue;
+
+	    if (change.done) {
+		const updated = await markSourceTaskDone(
+		    this.app,
+		    this.settings.sourceDirectories,
+		    record.projectId,
+		    record.sourceTaskId,
+		    dateStr,
+		    record.sourcePath
+		);
+		registry = updated
+		    ? markRegistryDone(registry, record.registryId, this.nowIso())
+		    : markRegistryOrphaned(registry, record.registryId, this.nowIso());
+	    } else {
+		const updated = await markSourceTaskOpen(
+		    this.app,
+		    this.settings.sourceDirectories,
+		    record.projectId,
+		    record.sourceTaskId,
+		    record.sourcePath
+		);
+		registry = updated
+		    ? markRegistryOpen(registry, record.registryId, { date: dateStr, kind: change.kind, itemId: change.itemId }, this.nowIso())
+		    : markRegistryOrphaned(registry, record.registryId, this.nowIso());
+	    }
+	    dirty = true;
+	}
+
+	if (dirty) {
+	    await saveSourceTaskRegistry(this.app, registry);
+	}
+    }
+
+    private async syncSourceBackedItemState(
+	item: { id: string; sourceRegistryId?: string },
+	dateStr: string,
+	kind: "event" | "unscheduled",
+	done: boolean
+    ) {
+	if (!item.sourceRegistryId) return;
+
+	let registry = await loadSourceTaskRegistry(this.app);
+	const record = findRegistryRecordById(registry, item.sourceRegistryId);
+	if (!record) return;
+
+	if (done) {
+	    const updated = await markSourceTaskDone(
+		this.app,
+		this.settings.sourceDirectories,
+		record.projectId,
+		record.sourceTaskId,
+		dateStr,
+		record.sourcePath
+	    );
+	    registry = updated
+		? markRegistryDone(registry, record.registryId, this.nowIso())
+		: markRegistryOrphaned(registry, record.registryId, this.nowIso());
+	} else {
+	    const updated = await markSourceTaskOpen(
+		this.app,
+		this.settings.sourceDirectories,
+		record.projectId,
+		record.sourceTaskId,
+		record.sourcePath
+	    );
+	    registry = updated
+		? markRegistryOpen(registry, record.registryId, { date: dateStr, kind, itemId: item.id }, this.nowIso())
+		: markRegistryOrphaned(registry, record.registryId, this.nowIso());
+	}
+
+	await saveSourceTaskRegistry(this.app, registry);
+    }
+
+    private async resetSourceBackedItem(item: { sourceRegistryId?: string }) {
+	if (!item.sourceRegistryId) return;
+
+	let registry = await loadSourceTaskRegistry(this.app);
+	const record = findRegistryRecordById(registry, item.sourceRegistryId);
+	if (!record) return;
+
+	const updated = await resetSourceTaskAvailable(
+	    this.app,
+	    this.settings.sourceDirectories,
+	    record.projectId,
+	    record.sourceTaskId,
+	    record.sourcePath
+	);
+
+	registry = updated
+	    ? markRegistryAvailable(registry, record.registryId, this.nowIso())
+	    : markRegistryOrphaned(registry, record.registryId, this.nowIso());
+	await saveSourceTaskRegistry(this.app, registry);
+    }
+
+    private async updateSourceRegistryLocation(
+	item: { sourceRegistryId?: string },
+	dateStr: string,
+	kind: "event" | "unscheduled",
+	itemId: string
+    ) {
+	if (!item.sourceRegistryId) return;
+	let registry = await loadSourceTaskRegistry(this.app);
+	registry = updateRegistryLocation(registry, item.sourceRegistryId, { date: dateStr, kind, itemId });
+	await saveSourceTaskRegistry(this.app, registry);
     }
 
     // ===== Time tracking =====
@@ -419,12 +654,16 @@ export default class TascalPlugin extends Plugin {
 		    async (updates) => {
 			let updatedStore = updateEvent(store, event.id, updates);
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
+			if (updates.done !== undefined && updates.done !== event.done) {
+			    await this.syncSourceBackedItemState(event, ctx.dateStr, "event", updates.done);
+			}
 			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 			new Notice(`Updated: ${updates.summary || event.summary}`);
 		    },
 		    async () => {
 			let updatedStore = this.suppressAndRemove(store, event);
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
+			await this.resetSourceBackedItem(event);
 			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 			new Notice(`Deleted: ${event.summary}`);
 		    },
@@ -447,12 +686,18 @@ export default class TascalPlugin extends Plugin {
 				    sourceRef: ctx.dateStr,
 				    done: false,
 				    timeTracking: [],
+				    sourceRegistryId: event.sourceRegistryId,
+				    sourceProjectId: event.sourceProjectId,
+				    sourceTaskId: event.sourceTaskId,
+				    sourceNotePath: event.sourceNotePath,
+				    sourceLoadedAt: event.sourceLoadedAt,
 				};
 				targetStore = addEvent(targetStore, rescheduledEvent);
 				await saveDayStore(this.app, targetDate, targetStore);
 
 				let updatedStore = this.suppressAndRemove(store, event);
 				await saveDayStore(this.app, ctx.dateStr, updatedStore);
+				await this.updateSourceRegistryLocation(event, targetDate, "event", rescheduledEvent.id);
 
 				await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 				new Notice(`Rescheduled "${event.summary}" to ${targetDate} at ${start}.`, 7000);
@@ -519,6 +764,11 @@ export default class TascalPlugin extends Plugin {
 			    sourceRef: entry.event.sourceRef,
 			    done: false,
 			    timeTracking: [],
+			    sourceRegistryId: entry.event.sourceRegistryId,
+			    sourceProjectId: entry.event.sourceProjectId,
+			    sourceTaskId: entry.event.sourceTaskId,
+			    sourceNotePath: entry.event.sourceNotePath,
+			    sourceLoadedAt: entry.event.sourceLoadedAt,
 			};
 			newStore = addEvent(newStore, rescheduledEvent);
 			await saveDayStore(this.app, newTargetDate, newStore);
@@ -527,6 +777,7 @@ export default class TascalPlugin extends Plugin {
 			let oldStore = await loadDayStore(this.app, entry.targetDate);
 			oldStore = removeEvent(oldStore, entry.event.id);
 			await saveDayStore(this.app, entry.targetDate, oldStore);
+			await this.updateSourceRegistryLocation(entry.event, newTargetDate, "event", rescheduledEvent.id);
 
 			new Notice(`Rescheduled "${entry.event.summary}" from ${entry.targetDate} to ${newTargetDate} at ${start}.`, 7000);
 		    }
@@ -538,6 +789,7 @@ export default class TascalPlugin extends Plugin {
 		let store = await loadDayStore(this.app, entry.targetDate);
 		store = removeEvent(store, entry.event.id);
 		await saveDayStore(this.app, entry.targetDate, store);
+		await this.resetSourceBackedItem(entry.event);
 		new Notice(`Deleted rescheduled event: ${entry.event.summary}`);
 	    }
 	);
@@ -575,6 +827,7 @@ export default class TascalPlugin extends Plugin {
 	    async (task) => {
 		let updatedStore = updateUnscheduledTask(store, task.id, { done: !task.done });
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
+		await this.syncSourceBackedItemState(task, ctx.dateStr, "unscheduled", !task.done);
 		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 		new Notice(`${task.done ? "Reopened" : "Completed"} unscheduled task: ${task.summary}`, 6000);
 	    },
@@ -597,8 +850,16 @@ export default class TascalPlugin extends Plugin {
 			await saveDayStore(this.app, ctx.dateStr, currentStore);
 
 			let targetStore = await loadDayStore(this.app, targetDate);
-			targetStore = addUnscheduledTask(targetStore, createUnscheduledTask(task.summary, task.estimateMinutes));
+			const movedTask = createUnscheduledTask(task.summary, task.estimateMinutes, {
+			    sourceRegistryId: task.sourceRegistryId,
+			    sourceProjectId: task.sourceProjectId,
+			    sourceTaskId: task.sourceTaskId,
+			    sourceNotePath: task.sourceNotePath,
+			    sourceLoadedAt: task.sourceLoadedAt,
+			});
+			targetStore = addUnscheduledTask(targetStore, movedTask);
 			await saveDayStore(this.app, targetDate, targetStore);
+			await this.updateSourceRegistryLocation(task, targetDate, "unscheduled", movedTask.id);
 
 			await this.reRenderTimeline(ctx.file, ctx.dateStr, currentStore);
 			new Notice(`Moved "${task.summary}" to ${targetDate}.`, 7000);
@@ -611,8 +872,16 @@ export default class TascalPlugin extends Plugin {
 		    const end = DateTime.fromFormat(start, "HH:mm").plus({ minutes: durationMinutes }).toFormat("HH:mm");
 		    let updatedStore = await loadDayStore(this.app, ctx.dateStr);
 		    updatedStore = removeUnscheduledTask(updatedStore, task.id);
-		    updatedStore = addEvent(updatedStore, createManualEvent(task.summary, start, end));
+		    const scheduledEvent = createManualEvent(task.summary, start, end, {
+			sourceRegistryId: task.sourceRegistryId,
+			sourceProjectId: task.sourceProjectId,
+			sourceTaskId: task.sourceTaskId,
+			sourceNotePath: task.sourceNotePath,
+			sourceLoadedAt: task.sourceLoadedAt,
+		    });
+		    updatedStore = addEvent(updatedStore, scheduledEvent);
 		    await saveDayStore(this.app, ctx.dateStr, updatedStore);
+		    await this.updateSourceRegistryLocation(task, ctx.dateStr, "event", scheduledEvent.id);
 		    await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 		    new Notice(`Scheduled "${task.summary}" for ${start}-${end}.`, 7000);
 		});
@@ -621,6 +890,7 @@ export default class TascalPlugin extends Plugin {
 	    async (task) => {
 		let updatedStore = removeUnscheduledTask(store, task.id);
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
+		await this.resetSourceBackedItem(task);
 		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
 		new Notice(`Deleted unscheduled task: ${task.summary}`, 6000);
 	    }

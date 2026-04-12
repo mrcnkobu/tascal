@@ -194,7 +194,12 @@ export function mergeCalendarEvents(store: DayStore, incoming: IncomingCalendarE
 
 // ===== Helpers =====
 
-export function createManualEvent(summary: string, start: string, end: string): StoredEvent {
+export function createManualEvent(
+    summary: string,
+    start: string,
+    end: string,
+    extras?: Partial<Pick<StoredEvent, "sourceRegistryId" | "sourceProjectId" | "sourceTaskId" | "sourceNotePath" | "sourceLoadedAt">>
+): StoredEvent {
     return {
 	id: crypto.randomUUID(),
 	summary,
@@ -203,15 +208,21 @@ export function createManualEvent(summary: string, start: string, end: string): 
 	source: "manual",
 	done: false,
 	timeTracking: [],
+	...extras,
     };
 }
 
-export function createUnscheduledTask(summary: string, estimateMinutes?: number): UnscheduledTask {
+export function createUnscheduledTask(
+    summary: string,
+    estimateMinutes?: number,
+    extras?: Partial<Pick<UnscheduledTask, "sourceRegistryId" | "sourceProjectId" | "sourceTaskId" | "sourceNotePath" | "sourceLoadedAt">>
+): UnscheduledTask {
     return {
 	id: crypto.randomUUID(),
 	summary,
 	done: false,
 	estimateMinutes,
+	...extras,
     };
 }
 
@@ -370,6 +381,17 @@ export function renderTimeline(
 	    const displayName = vaultPath.split("/").pop()!;
 	    displaySummary += ` [[${vaultPath}|${displayName}]]`;
 	}
+	if (ev.sourceProjectId) {
+	    displaySummary += ` *· project-id: ${ev.sourceProjectId}*`;
+	}
+	if (ev.sourceNotePath) {
+	    const vaultPath = ev.sourceNotePath.replace(/\.md$/, "");
+	    const displayName = vaultPath.split("/").pop()!;
+	    displaySummary += ` [[${vaultPath}|${displayName}]]`;
+	}
+	if (ev.sourceLoadedAt) {
+	    displaySummary += ` *· loaded ${ev.sourceLoadedAt}*`;
+	}
 	if (isTracking) {
 	    displaySummary += " *· tracking*";
 	}
@@ -452,12 +474,7 @@ export function syncCheckboxState(store: DayStore, renderedLines: string[]): Day
 	const startStr = m[3];
 	// Strip rendering decorations to recover the stored summary
 	let summary = m[5].trim();
-	summary = summary.replace(/\s*\*· tracking\*$/, "");
-	summary = summary.replace(/\s*\[\[[^\]]+\]\]$/, "");
-	summary = summary.replace(/\s*\[[^\]]*\]\([^)]+\)$/, "");
-	summary = summary.replace(/\s*\*· overlap [^*]+\*$/, "");
-	summary = summary.replace(/\s*\*· (rs:[^*]+|rc)\*$/, "");
-	summary = summary.replace(/^\*\(([^)]+)\)\*/, "($1)");
+	summary = stripRenderedEventSummary(summary);
 
 	// Match by start + summary (unique within a day)
 	const event = updated.events.find(
@@ -469,6 +486,33 @@ export function syncCheckboxState(store: DayStore, renderedLines: string[]): Day
     }
 
     return updated;
+}
+
+function stripRenderedEventSummary(summary: string): string {
+    let next = summary.trim();
+    next = next.replace(/^\*\(([^)]+)\)\*/, "($1)");
+
+    let changed = true;
+    while (changed) {
+	changed = false;
+	for (const pattern of [
+	    /\s*\*· tracking\*$/,
+	    /\s*\*· overlap [^*]+\*$/,
+	    /\s*\*· loaded [^*]+\*$/,
+	    /\s*\[\[[^\]]+\]\]$/,
+	    /\s*\[[^\]]*\]\([^)]+\)$/,
+	    /\s*\*· project-id: [^*]+\*$/,
+	    /\s*\*· (rs:[^*]+|rc)\*$/,
+	]) {
+	    const updated = next.replace(pattern, "");
+	    if (updated !== next) {
+		next = updated.trimEnd();
+		changed = true;
+	    }
+	}
+    }
+
+    return next.trim();
 }
 
 // ===== Directory listing =====

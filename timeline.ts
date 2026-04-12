@@ -369,26 +369,30 @@ export interface BuildTimelineResult {
     updatedNote: string;
     store: DayStore;
     rescheduled: { target: string; line: string }[];
+    sourceTaskChanges: { registryId: string; done: boolean; kind: "event" | "unscheduled"; itemId: string }[];
 }
 
 export async function buildTimeline(
     app: App,
     note: string,
     dateStr: string,
-    settings: TascalSettings
+    settings: TascalSettings,
+    options?: { skipCheckboxSync?: boolean }
 ): Promise<BuildTimelineResult> {
     const localDate = DateTime.fromISO(dateStr, { zone: settings.timezone });
     const { timeline: existingTimeline } = extractManagedTimelineSection(note, settings.timelineHeading);
     const { lines: existingUnscheduled } = extractManagedUnscheduledSection(note, settings.unscheduledHeading);
 
-    let store = await loadDayStore(app, dateStr);
+    const originalStore = await loadDayStore(app, dateStr);
+    let store = originalStore;
 
-    if (existingTimeline.length > 0) {
+    if (!options?.skipCheckboxSync && existingTimeline.length > 0) {
 	store = syncCheckboxState(store, existingTimeline);
     }
-    if (existingUnscheduled.length > 0) {
+    if (!options?.skipCheckboxSync && existingUnscheduled.length > 0) {
 	store = syncUnscheduledCheckboxState(store, existingUnscheduled);
     }
+    const sourceTaskChanges = collectSourceTaskChanges(originalStore, store);
 
     const rescheduled: { target: string; line: string }[] = [];
 
@@ -413,7 +417,40 @@ export async function buildTimeline(
     let updatedNote = updateTascalSection(note, timelineLines, settings.timelineHeading);
     updatedNote = updateUnscheduledSection(updatedNote, unscheduledLines, settings.unscheduledHeading);
 
-    return { updatedNote, store, rescheduled };
+    return { updatedNote, store, rescheduled, sourceTaskChanges };
+}
+
+function collectSourceTaskChanges(
+    before: DayStore,
+    after: DayStore
+): { registryId: string; done: boolean; kind: "event" | "unscheduled"; itemId: string }[] {
+    const changes: { registryId: string; done: boolean; kind: "event" | "unscheduled"; itemId: string }[] = [];
+
+    const beforeEvents = new Map(before.events.map(event => [event.id, event]));
+    for (const event of after.events) {
+	const prior = beforeEvents.get(event.id);
+	if (!prior || prior.done === event.done || !event.sourceRegistryId) continue;
+	changes.push({
+	    registryId: event.sourceRegistryId,
+	    done: event.done,
+	    kind: "event",
+	    itemId: event.id,
+	});
+    }
+
+    const beforeTasks = new Map((before.unscheduledTasks || []).map(task => [task.id, task]));
+    for (const task of after.unscheduledTasks || []) {
+	const prior = beforeTasks.get(task.id);
+	if (!prior || prior.done === task.done || !task.sourceRegistryId) continue;
+	changes.push({
+	    registryId: task.sourceRegistryId,
+	    done: task.done,
+	    kind: "unscheduled",
+	    itemId: task.id,
+	});
+    }
+
+    return changes;
 }
 
 function findHeading(content: string, heading: string): { start: number; lineEnd: number; level: number } | null {
@@ -478,19 +515,31 @@ export function renderUnscheduledTasks(tasks: UnscheduledTask[]): string[] {
     return tasks.map((task) => {
 	const checked = task.done ? "x" : " ";
 	const estimate = task.estimateMinutes ? ` *(${formatMinutes(task.estimateMinutes)})*` : "";
-	return `- [${checked}] ${task.summary}${estimate}`;
+	let summary = task.summary;
+	if (task.sourceProjectId) {
+	    summary += ` *· project-id: ${task.sourceProjectId}*`;
+	}
+	if (task.sourceNotePath) {
+	    const vaultPath = task.sourceNotePath.replace(/\.md$/, "");
+	    const displayName = vaultPath.split("/").pop()!;
+	    summary += ` [[${vaultPath}|${displayName}]]`;
+	}
+	if (task.sourceLoadedAt) {
+	    summary += ` *· loaded ${task.sourceLoadedAt}*`;
+	}
+	return `- [${checked}] ${summary}${estimate}`;
     });
 }
 
 export function syncUnscheduledCheckboxState(store: DayStore, lines: string[]): DayStore {
-    const pattern = /^- \[( |x)]\s+(.+?)(?:\s+\*\(([^)]+)\)\*)?$/;
+    const pattern = /^- \[( |x)]\s+(.+)$/;
     let updated = store;
 
     for (const line of lines) {
 	const match = line.match(pattern);
 	if (!match) continue;
 	const done = match[1] === "x";
-	const summary = match[2].trim();
+	const summary = stripRenderedUnscheduledSummary(match[2]);
 	const task = (updated.unscheduledTasks || []).find(item => item.summary === summary);
 	if (task && task.done !== done) {
 	    updated = {
@@ -503,6 +552,30 @@ export function syncUnscheduledCheckboxState(store: DayStore, lines: string[]): 
     }
 
     return updated;
+}
+
+function stripRenderedUnscheduledSummary(text: string): string {
+    let summary = text.trim();
+
+    let changed = true;
+    while (changed) {
+	changed = false;
+	for (const pattern of [
+	    /\s*\*· loaded [^*]+\*$/,
+	    /\s*\[\[[^\]]+\]\]$/,
+	    /\s*\[[^\]]*\]\([^)]+\)$/,
+	    /\s*\*· project-id: [^*]+\*$/,
+	    /\s+\*\([^)]+\)\*$/,
+	]) {
+	    const updated = summary.replace(pattern, "");
+	    if (updated !== summary) {
+		summary = updated.trimEnd();
+		changed = true;
+	    }
+	}
+    }
+
+    return summary.trim();
 }
 
 function formatMinutes(minutes: number): string {

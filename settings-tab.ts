@@ -27,7 +27,7 @@ export interface TascalPluginInterface extends Plugin {
 const WEEK_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 const WEEKDAY_ABBRS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-type SectionKey = "general" | "calendars" | "workingHours" | "recurringRules" | "templates";
+type SectionKey = "general" | "sources" | "calendars" | "workingHours" | "recurringRules" | "templates";
 
 export class TascalSettingTab extends PluginSettingTab {
     plugin: TascalPluginInterface;
@@ -61,6 +61,15 @@ export class TascalSettingTab extends PluginSettingTab {
 	    this.buildGeneralSummary(),
 	    "Core timezone and plugin status.",
 	    (body) => this.renderGeneral(body)
+	);
+
+	this.renderSection(
+	    containerEl,
+	    "sources",
+	    "Project Sources",
+	    this.buildSourcesSummary(),
+	    "Vault-relative directories Tascal scans for project inbox notes.",
+	    (body) => this.renderSources(body)
 	);
 
 	this.renderSection(
@@ -234,6 +243,47 @@ export class TascalSettingTab extends PluginSettingTab {
 
 	const lastSync = this.latestCalendarSync;
 	this.renderStatusChip(status, lastSync ? `Last sync ${lastSync}` : "No calendar sync recorded yet", lastSync ? "info" : "warning");
+    }
+
+    private renderSources(containerEl: HTMLElement) {
+	const dirs = this.plugin.settings.sourceDirectories || [];
+	const setting = new Setting(containerEl)
+	    .setName("Source directories")
+	    .setDesc("One vault-relative directory per line. Tascal scans these locations for notes with tascal-project-id frontmatter.");
+	const status = this.createStatusHost(setting);
+
+	setting.addTextArea((text) => {
+	    text
+		.setPlaceholder("Projects\nWork/Projects")
+		.setValue(dirs.join("\n"))
+		.onChange((value) => {
+		    const normalized = value
+			.split("\n")
+			.map(line => line.trim().replace(/^\/+|\/+$/g, ""))
+			.filter(Boolean);
+
+		    this.plugin.settings.sourceDirectories = normalized;
+		    const duplicates = this.collectDuplicates(normalized);
+		    const messages: ValidationMessage[] = [];
+		    if (normalized.length === 0) {
+			messages.push({ level: "warning", text: "No source directories configured. Project task import will be unavailable." });
+		    } else {
+			messages.push({ level: "info", text: `${normalized.length} director${normalized.length === 1 ? "y" : "ies"} configured.` });
+		    }
+		    if (duplicates.size > 0) {
+			messages.push({ level: "warning", text: "Duplicate directory entries will be ignored during scanning." });
+		    }
+		    this.renderMessages(status, messages);
+		    this.scheduleSave();
+		});
+
+	    text.inputEl.rows = Math.max(4, dirs.length || 4);
+	});
+
+	const initialMessages: ValidationMessage[] = dirs.length === 0
+	    ? [{ level: "warning", text: "No source directories configured. Project task import will be unavailable." }]
+	    : [{ level: "info", text: `${dirs.length} director${dirs.length === 1 ? "y" : "ies"} configured.` }];
+	this.renderMessages(status, initialMessages);
     }
 
     private renderCalendars(containerEl: HTMLElement) {
@@ -765,6 +815,12 @@ export class TascalSettingTab extends PluginSettingTab {
     private buildWorkingHoursSummary(): string {
 	const overrides = Object.values(this.plugin.settings.dayOverrides).filter(override => override.start || override.end).length;
 	return `${this.plugin.settings.defaultDayStart}-${this.plugin.settings.defaultDayEnd}, ${overrides} override${overrides === 1 ? "" : "s"}`;
+    }
+
+    private buildSourcesSummary(): string {
+	const total = this.plugin.settings.sourceDirectories.length;
+	if (total === 0) return "No directories";
+	return `${total} director${total === 1 ? "y" : "ies"}`;
     }
 
     private buildRecurringRulesSummary(): string {

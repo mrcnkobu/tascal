@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, TextComponent, ToggleComponent } from "obsidian";
 import { DateTime } from "luxon";
-import { StoredEvent, DayStore, EventTemplate, UnscheduledTask } from "./types";
+import { StoredEvent, DayStore, EventTemplate, SourceTaskCandidate, UnscheduledTask } from "./types";
 import { formatTime, parseDuration } from "./utils";
 import { expandTemplate, findTemplateByShortcode, resolveLinkedNotePath } from "./templates";
 import { validateIsoDate, validateTime, validateTimeRange } from "./validation";
@@ -477,6 +477,64 @@ export class AddUnscheduledTaskModal extends Modal {
 
 	const cancelBtn = btnContainer.createEl("button", {
 	    text: "Cancel",
+	    cls: "cancel-button"
+	});
+	cancelBtn.addEventListener("click", () => this.close());
+    }
+
+    onClose() {
+	this.contentEl.empty();
+    }
+}
+
+export class ImportSourceTasksModal extends Modal {
+    private candidates: SourceTaskCandidate[];
+    private onImport: (candidate: SourceTaskCandidate) => void;
+
+    constructor(app: App, candidates: SourceTaskCandidate[], onImport: (candidate: SourceTaskCandidate) => void) {
+	super(app);
+	this.candidates = candidates;
+	this.onImport = onImport;
+    }
+
+    onOpen() {
+	const { contentEl } = this;
+	contentEl.empty();
+	contentEl.addClass("tascal-modal");
+	contentEl.createEl("h2", { text: "Import Project Tasks" });
+
+	const container = contentEl.createEl("div", { cls: "event-selection-container" });
+	if (this.candidates.length === 0) {
+	    container.createEl("p", {
+		text: "No importable project tasks found.",
+		cls: "no-events-message"
+	    });
+	} else {
+	    for (const candidate of this.candidates) {
+		const itemDiv = container.createEl("div", { cls: "event-option" });
+		const projectDiv = itemDiv.createEl("div", { cls: "event-date" });
+		projectDiv.setText(candidate.projectId);
+
+		const summaryDiv = itemDiv.createEl("div", { cls: "event-summary" });
+		const estimate = candidate.estimateMinutes ? ` (${candidate.estimateMinutes}m)` : "";
+		summaryDiv.setText(`${candidate.summary}${estimate}`);
+
+		const sourceDiv = itemDiv.createEl("div", { cls: "event-status" });
+		sourceDiv.setText(candidate.sourcePath);
+
+		const importBtn = itemDiv.createEl("button", {
+		    text: "Import",
+		    cls: "track-button"
+		});
+		importBtn.addEventListener("click", () => {
+		    this.onImport(candidate);
+		    this.close();
+		});
+	    }
+	}
+
+	const cancelBtn = contentEl.createEl("button", {
+	    text: "Close",
 	    cls: "cancel-button"
 	});
 	cancelBtn.addEventListener("click", () => this.close());

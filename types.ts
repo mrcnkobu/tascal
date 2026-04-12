@@ -34,6 +34,11 @@ export interface StoredEvent {
     linkedNotePath?: string;     // vault path to linked note
     linkedNoteMarkdown?: string; // Obsidian-generated markdown link (respects vault settings)
     templateId?: string;         // template used to create this event
+    sourceRegistryId?: string;
+    sourceProjectId?: string;
+    sourceTaskId?: string;
+    sourceNotePath?: string;
+    sourceLoadedAt?: string;
 }
 
 export interface UnscheduledTask {
@@ -41,6 +46,11 @@ export interface UnscheduledTask {
     summary: string;
     done: boolean;
     estimateMinutes?: number;
+    sourceRegistryId?: string;
+    sourceProjectId?: string;
+    sourceTaskId?: string;
+    sourceNotePath?: string;
+    sourceLoadedAt?: string;
 }
 
 export interface DayStore {
@@ -76,12 +86,51 @@ export interface TascalUiState {
     settingsSections: Record<string, boolean>;
 }
 
+export interface SourceTaskCandidate {
+    projectId: string;
+    sourcePath: string;
+    summary: string;
+    status: "available" | "imported" | "done";
+    sourceTaskId?: string;
+    estimateMinutes?: number;
+    availableFrom?: string;
+    doneAt?: string;
+    loadedAt?: string;
+    metadata: Record<string, string>;
+    lineNumber: number;
+}
+
+export interface SourceTaskLocation {
+    date: string;
+    kind: "unscheduled" | "event";
+    itemId: string;
+}
+
+export interface SourceTaskRegistryRecord {
+    registryId: string;
+    projectId: string;
+    sourceTaskId: string;
+    sourcePath: string;
+    sourceSummary: string;
+    state: "available" | "imported" | "done" | "orphaned";
+    currentLocation?: SourceTaskLocation;
+    importedAt?: string;
+    completedAt?: string;
+    lastWriteBackAt?: string;
+}
+
+export interface SourceTaskRegistry {
+    version: 1;
+    records: SourceTaskRegistryRecord[];
+}
+
 // ===== Settings =====
 
 export interface TascalSettings {
     timezone: string;
     timelineHeading: string;
     unscheduledHeading: string;
+    sourceDirectories: string[];
     calendars: { id: string; url: string }[];
     defaultDayStart: string; // e.g., "08:00"
     defaultDayEnd: string;   // e.g., "22:00"
@@ -100,6 +149,7 @@ export const DEFAULT_SETTINGS: TascalSettings = {
     timezone: "Europe/Warsaw",
     timelineHeading: "Timeline",
     unscheduledHeading: "Unscheduled",
+    sourceDirectories: [],
     calendars: [],
     defaultDayStart: "08:00",
     defaultDayEnd: "22:00",
@@ -114,9 +164,10 @@ export const DEFAULT_SETTINGS: TascalSettings = {
     eventTemplates: [],
     recurringRules: [],
     pendingLinkedNotes: undefined,
-    uiState: {
+	uiState: {
 	settingsSections: {
 	    general: true,
+	    sources: true,
 	    calendars: true,
 	    workingHours: true,
 	    recurringRules: true,
