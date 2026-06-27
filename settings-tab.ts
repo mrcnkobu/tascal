@@ -48,6 +48,10 @@ export class TascalSettingTab extends PluginSettingTab {
     }
 
     display(): void {
+	this.renderSettings();
+    }
+
+    private renderSettings(): void {
 	const { containerEl } = this;
 	containerEl.empty();
 	containerEl.addClass("tascal-settings-root");
@@ -165,7 +169,7 @@ export class TascalSettingTab extends PluginSettingTab {
 	    const next = !this.plugin.settings.uiState.settingsSections[section];
 	    this.plugin.settings.uiState.settingsSections[section] = next;
 	    this.scheduleSave();
-	    this.display();
+	    this.renderSettings();
 	});
 
 	descriptionEl.toggleClass("is-collapsed", !open);
@@ -332,10 +336,10 @@ export class TascalSettingTab extends PluginSettingTab {
 			.addButton((btn) =>
 			    btn
 				.setButtonText("Remove calendar")
-				.setWarning()
+				.setClass("mod-warning")
 				.onClick(() => {
 				    this.plugin.settings.calendars.splice(index, 1);
-				    void this.plugin.saveSettings().then(() => this.display());
+				    void this.plugin.saveSettings().then(() => this.renderSettings());
 				})
 			);
 	});
@@ -347,7 +351,7 @@ export class TascalSettingTab extends PluginSettingTab {
 		    .setCta()
 		    .onClick(() => {
 				this.plugin.settings.calendars.push({ id: "", url: "" });
-				void this.plugin.saveSettings().then(() => this.display());
+				void this.plugin.saveSettings().then(() => this.renderSettings());
 			    })
 	    );
     }
@@ -498,7 +502,7 @@ export class TascalSettingTab extends PluginSettingTab {
 				this.plugin.settings.recurringRules[index].recurrence = value === "weekly"
 				    ? { type: "weekly", days: [] }
 				    : { type: "monthly", day: 1 };
-				void this.plugin.saveSettings().then(() => this.display());
+				void this.plugin.saveSettings().then(() => this.renderSettings());
 			    });
 		});
 
@@ -570,11 +574,11 @@ export class TascalSettingTab extends PluginSettingTab {
 	    new Setting(card)
 		.addButton((btn) =>
 		    btn
-			.setButtonText("Remove Rule")
-			.setWarning()
+				.setButtonText("Remove Rule")
+				.setClass("mod-warning")
 				.onClick(() => {
 				    this.plugin.settings.recurringRules.splice(index, 1);
-				    void this.plugin.saveSettings().then(() => this.display());
+				    void this.plugin.saveSettings().then(() => this.renderSettings());
 				})
 		);
 	});
@@ -592,7 +596,7 @@ export class TascalSettingTab extends PluginSettingTab {
 				    duration: 60,
 				    recurrence: { type: "weekly", days: [] },
 				});
-				void this.plugin.saveSettings().then(() => this.display());
+				void this.plugin.saveSettings().then(() => this.renderSettings());
 			    })
 	    );
     }
@@ -751,11 +755,11 @@ export class TascalSettingTab extends PluginSettingTab {
 	    new Setting(card)
 		.addButton((btn) =>
 		    btn
-			.setButtonText("Remove Template")
-			.setWarning()
+				.setButtonText("Remove Template")
+				.setClass("mod-warning")
 				.onClick(() => {
 				    this.plugin.settings.eventTemplates.splice(index, 1);
-				    void this.plugin.saveSettings().then(() => this.display());
+				    void this.plugin.saveSettings().then(() => this.renderSettings());
 				})
 		);
 	});
@@ -773,7 +777,7 @@ export class TascalSettingTab extends PluginSettingTab {
 				    namePattern: "{{date}}",
 				    createNote: false,
 				});
-				void this.plugin.saveSettings().then(() => this.display());
+				void this.plugin.saveSettings().then(() => this.renderSettings());
 			    })
 	    );
     }
@@ -841,7 +845,7 @@ export class TascalSettingTab extends PluginSettingTab {
 
 	if (formatted !== this.latestCalendarSync) {
 	    this.latestCalendarSync = formatted;
-	    this.display();
+	    this.renderSettings();
 	}
     }
 
