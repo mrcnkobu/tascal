@@ -7,10 +7,10 @@ import { extractEventsForDate } from "./calendar";
 import {
     loadDayStore, saveDayStore, mergeCalendarEvents, updateEvent,
     removeEvent, addEvent, addSuppression, findEventById, startTracking, stopTracking,
-    renderTimeline, createManualEvent, listDayStoreDates, IncomingCalendarEvent,
+    createManualEvent, listDayStoreDates, IncomingCalendarEvent,
     addUnscheduledTask, createUnscheduledTask, removeUnscheduledTask, updateUnscheduledTask
 } from "./store";
-import { updateTascalSection, appendRescheduledTask, buildTimeline } from "./timeline";
+import { appendRescheduledTask, buildTimeline } from "./timeline";
 import { TascalSettingTab } from "./settings-tab";
 import { runStoreMigration, migrateRecurringStringsToRules } from "./migration";
 import {

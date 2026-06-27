@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, TextComponent, ToggleComponent } from "obsidian";
 import { DateTime } from "luxon";
-import { StoredEvent, DayStore, EventTemplate, SourceTaskCandidate, UnscheduledTask } from "./types";
+import { StoredEvent, EventTemplate, SourceTaskCandidate, UnscheduledTask } from "./types";
 import { formatTime, parseDuration } from "./utils";
 import { expandTemplate, findTemplateByShortcode, resolveLinkedNotePath } from "./templates";
 import { validateIsoDate, validateTime, validateTimeRange } from "./validation";

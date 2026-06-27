@@ -1,6 +1,6 @@
 {
 	"name": "tascal",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "A calendar-driven daily planner and time tracker.",
 	"main": "main.js",
 	"scripts": {

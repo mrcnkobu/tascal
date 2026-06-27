@@ -174,7 +174,7 @@ async function applyLegacyRecurringEvents(
 	    for (const line of content.split("\n").filter(l => l.trim())) {
 		const markerMatch = line.match(/^(.+?)\s*<!--\s*added:(\d{4}-\d{2}-\d{2})\s*-->$/);
 		if (markerMatch) {
-		    const [_, eventKey, markerDate] = markerMatch;
+			    const [, eventKey, markerDate] = markerMatch;
 		    if (!existingMarkers[eventKey]) existingMarkers[eventKey] = [];
 		    existingMarkers[eventKey].push(markerDate);
 		}
@@ -192,7 +192,7 @@ async function applyLegacyRecurringEvents(
 	const repeatMatch = line.match(/\[(w|m):([^\]]+)\]/);
 	if (!repeatMatch) continue;
 
-	const [_, type, rule] = repeatMatch;
+	const [, type, rule] = repeatMatch;
 	const eventKey = line.replace(/\s*\[(rc:[wm]|[wm]:[^\]]+)\]$/, "").trim();
 	if (existingMarkers[eventKey]?.includes(dateStr)) continue;
 	if (suppressions.has(eventKey)) continue;
@@ -296,7 +296,7 @@ async function loadRescheduledIntoStore(
 
 	let rangeMatch = line.match(RANGE_RE);
 	if (rangeMatch) {
-	    const [_, reschedDate, fromDate, startRaw, endRaw, summaryRaw] = rangeMatch;
+	    const [, reschedDate, fromDate, startRaw, endRaw, summaryRaw] = rangeMatch;
 	    if (reschedDate !== dateStr) {
 		updatedLines.push(line);
 		continue;
@@ -327,7 +327,7 @@ async function loadRescheduledIntoStore(
 
 	let durMatch = line.match(DUR_RE);
 	if (durMatch) {
-	    const [_, reschedDate, fromDate, startRaw, durStr, summaryRaw] = durMatch;
+	    const [, reschedDate, fromDate, startRaw, durStr, summaryRaw] = durMatch;
 	    if (reschedDate !== dateStr) {
 		updatedLines.push(line);
 		continue;

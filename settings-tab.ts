@@ -56,8 +56,6 @@ export class TascalSettingTab extends PluginSettingTab {
 	containerEl.empty();
 	containerEl.addClass("tascal-settings-root");
 
-		new Setting(containerEl).setName("Tascal Settings").setHeading();
-
 	this.renderSection(
 	    containerEl,
 	    "general",

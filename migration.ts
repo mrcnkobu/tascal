@@ -14,6 +14,14 @@ const MANUAL_START_DUR_RE = /^@(\d{1,2}(?::\d{2})?)\s*\(([\dhm]+)\)\s+(.+?)$/;
 const RESCHED_RANGE_RE = /^@(\d{4}-\d{2}-\d{2}) from (\d{4}-\d{2}-\d{2}): @(\d{1,2}(?::\d{2})?)[-–—](\d{1,2}(?::\d{2})?) (.+)$/;
 const RESCHED_DUR_RE = /^@(\d{4}-\d{2}-\d{2}) from (\d{4}-\d{2}-\d{2}): @(\d{1,2}(?::\d{2})?)\s*\(([\dhm\s]+)\) (.+)$/;
 
+interface LegacyCalendarCacheItem {
+    start: string;
+    end: string;
+    uid: string;
+    summary: string;
+    done?: boolean;
+}
+
 export async function runStoreMigration(app: App, settings: TascalSettings): Promise<void> {
     if (settings.storeMigrationDone) return;
 
@@ -63,7 +71,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 
 	    let rangeMatch = line.match(RESCHED_RANGE_RE);
 	    if (rangeMatch) {
-		const [_, targetDate, fromDate, startStr, endStr, summaryRaw] = rangeMatch;
+			const [, targetDate, fromDate, startStr, endStr, summaryRaw] = rangeMatch;
 		const summary = summaryRaw.replace(/\[[^\]]+\]/, "").replace(/@\d{4}-\d{2}-\d{2}/, "").trim();
 		if (!rescheduledByDate.has(targetDate)) rescheduledByDate.set(targetDate, []);
 		rescheduledByDate.get(targetDate)!.push({
@@ -78,7 +86,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 
 	    let durMatch = line.match(RESCHED_DUR_RE);
 	    if (durMatch) {
-		const [_, targetDate, fromDate, startStr, durStr, summaryRaw] = durMatch;
+			const [, targetDate, fromDate, startStr, durStr, summaryRaw] = durMatch;
 		const summary = summaryRaw.replace(/\[[^\]]+\]/, "").replace(/@\d{4}-\d{2}-\d{2}/, "").trim();
 		const startFormatted = formatTime(startStr);
 		const durationMinutes = parseDuration(durStr);
@@ -110,9 +118,11 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 	const calCachePath = `.tascal/${dateStr}.json`;
 	if (await adapter.exists(calCachePath)) {
 	    try {
-		const raw = JSON.parse(await adapter.read(calCachePath));
-		for (const item of raw) {
-		    const startDt = DateTime.fromISO(item.start);
+			const raw = JSON.parse(await adapter.read(calCachePath)) as unknown;
+			if (!Array.isArray(raw)) continue;
+			for (const item of raw) {
+			    if (!isLegacyCalendarCacheItem(item)) continue;
+			    const startDt = DateTime.fromISO(item.start);
 		    const endDt = DateTime.fromISO(item.end);
 		    const startStr = startDt.toFormat("HH:mm");
 		    const endStr = endDt.toFormat("HH:mm");
@@ -142,7 +152,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 	let ttData: TimeTrackingData = {};
 	if (await adapter.exists(ttPath)) {
 	    try {
-		ttData = JSON.parse(await adapter.read(ttPath));
+			ttData = parseTimeTrackingData(JSON.parse(await adapter.read(ttPath)) as unknown);
 	    } catch (e) {
 		console.error(`Migration: failed to read TT data for ${dateStr}:`, e);
 	    }
@@ -162,7 +172,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 			const m = line.match(TIMELINE_EVENT_RE);
 			if (!m) continue;
 
-			const [_, checkbox, _tracking, startStr, endStr, summary, ttStr] = m;
+			const [, checkbox, , startStr, endStr, summary, ttStr] = m;
 			const isDone = checkbox === "x";
 
 			// Parse inline TT
@@ -203,7 +213,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 		    for (const line of manualBlockLines) {
 			let m = line.match(MANUAL_START_END_RE);
 			if (m) {
-			    const [_, startRaw, endRaw, summary] = m;
+				    const [, startRaw, endRaw, summary] = m;
 			    const startStr = formatTime(startRaw);
 			    const endStr = formatTime(endRaw);
 			    const key = `manual-${startStr}-${summary.trim()}`;
@@ -224,7 +234,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 
 			m = line.match(MANUAL_START_DUR_RE);
 			if (m) {
-			    const [_, startRaw, durStr, summary] = m;
+				    const [, startRaw, durStr, summary] = m;
 			    const startStr = formatTime(startRaw);
 			    const durationMinutes = parseDuration(durStr);
 			    const startDt = DateTime.fromFormat(startStr, "HH:mm");
@@ -306,7 +316,7 @@ export function migrateRecurringStringsToRules(recurringEvents: string[]): Recur
 	let m;
 
 	if ((m = line.match(START_DUR_RE))) {
-	    const [_, startRaw, durStr, summary, type, rule] = m;
+		    const [, startRaw, durStr, summary, type, rule] = m;
 	    const start = formatTime(startRaw);
 	    const duration = parseDuration(durStr);
 
@@ -322,7 +332,7 @@ export function migrateRecurringStringsToRules(recurringEvents: string[]): Recur
 		recurrence,
 	    });
 	} else if ((m = line.match(START_END_RE))) {
-	    const [_, startRaw, endRaw, summary, type, rule] = m;
+		    const [, startRaw, endRaw, summary, type, rule] = m;
 	    const start = formatTime(startRaw);
 	    const endStr = formatTime(endRaw);
 	    const startDt = DateTime.fromFormat(start, "HH:mm");
@@ -344,4 +354,29 @@ export function migrateRecurringStringsToRules(recurringEvents: string[]): Recur
     }
 
     return rules;
+}
+
+function isLegacyCalendarCacheItem(value: unknown): value is LegacyCalendarCacheItem {
+    if (!value || typeof value !== "object") return false;
+    const item = value as Record<string, unknown>;
+    return typeof item.start === "string"
+	&& typeof item.end === "string"
+	&& typeof item.uid === "string"
+	&& typeof item.summary === "string";
+}
+
+function parseTimeTrackingData(value: unknown): TimeTrackingData {
+    if (!value || typeof value !== "object") return {};
+    const data: TimeTrackingData = {};
+    for (const [eventId, entries] of Object.entries(value as Record<string, unknown>)) {
+	if (!Array.isArray(entries)) continue;
+	data[eventId] = entries.filter(isTimeTrackingEntry);
+    }
+    return data;
+}
+
+function isTimeTrackingEntry(value: unknown): value is TimeTrackingEntry {
+    if (!value || typeof value !== "object") return false;
+    const entry = value as Record<string, unknown>;
+    return typeof entry.start === "string" && typeof entry.duration === "string";
 }
