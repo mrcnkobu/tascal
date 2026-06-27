@@ -97,7 +97,7 @@ export async function createLinkedNote(
     // Ensure folder exists
     const folderPath = notePath.substring(0, notePath.lastIndexOf("/"));
     if (folderPath && !app.vault.getAbstractFileByPath(folderPath)) {
-	await app.vault.createFolder(folderPath);
+	await ensureFolder(app, folderPath);
     }
 
     // Build initial content from note template (if configured)
@@ -116,6 +116,17 @@ export async function createLinkedNote(
 
     const file = await app.vault.create(notePath, content);
     return { file, status: "created" };
+}
+
+async function ensureFolder(app: App, folderPath: string): Promise<void> {
+    const parts = folderPath.split("/").filter(Boolean);
+    let currentPath = "";
+    for (const part of parts) {
+	currentPath = currentPath ? `${currentPath}/${part}` : part;
+	if (!app.vault.getAbstractFileByPath(currentPath)) {
+	    await app.vault.adapter.mkdir(currentPath);
+	}
+    }
 }
 
 export function findTemplateByShortcode(templates: EventTemplate[], shortcode: string): EventTemplate | undefined {

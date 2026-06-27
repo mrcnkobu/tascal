@@ -7,7 +7,6 @@ export function extractEventsForDate(
     localDate: DateTime,
     timezone: string
 ): EventData[] {
-    const startOfDay = localDate.startOf("day");
     const endOfDay = localDate.endOf("day");
 
     const vevents = calendar.getAllSubcomponents("vevent");
@@ -40,12 +39,15 @@ export function extractEventsForDate(
 	if (!exdatesByUid[uid]) exdatesByUid[uid] = new Set();
 
 	for (const ex of exs) {
-	    const values = ex.getValues();
-	    for (const dt of values) {
-		exdatesByUid[uid].add(new Date(dt).getTime());
+		const values = ex.getValues() as unknown[];
+		for (const dt of values) {
+			const date = toDate(dt);
+			if (date) {
+			    exdatesByUid[uid].add(date.getTime());
+			}
+		}
 	    }
 	}
-    }
 
     // Step 3: process master events and expand RRULEs
     for (const comp of vevents) {
@@ -108,4 +110,14 @@ export function extractEventsForDate(
     }
 
     return events;
+}
+
+function toDate(value: unknown): Date | null {
+    if (value instanceof Date) return value;
+    if (typeof value === "string" || typeof value === "number") return new Date(value);
+    if (value && typeof value === "object" && "toJSDate" in value) {
+	const candidate = value as { toJSDate: () => Date };
+	return candidate.toJSDate();
+    }
+    return null;
 }

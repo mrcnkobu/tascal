@@ -1,8 +1,8 @@
-import { Notice, Plugin, requestUrl } from 'obsidian';
+import { Notice, Plugin, requestUrl, TFile } from 'obsidian';
 import ICAL from "ical.js";
 import { DateTime } from "luxon";
-import { DayStore, SourceTaskCandidate, StoredEvent, TascalSettings, DEFAULT_SETTINGS, UnscheduledTask } from "./types";
-import { extractDateFromFilename, formatTime, parseDuration } from "./utils";
+import { DayStore, StoredEvent, TascalSettings, DEFAULT_SETTINGS } from "./types";
+import { extractDateFromFilename, formatTime } from "./utils";
 import { extractEventsForDate } from "./calendar";
 import {
     loadDayStore, saveDayStore, mergeCalendarEvents, updateEvent,
@@ -74,10 +74,77 @@ export default class TascalPlugin extends Plugin {
 	this.addCommand({
 	    id: "import-calendar-events",
 	    name: "Sync calendar",
-	    callback: async () => {
-		try {
-		    const activeFile = this.app.workspace.getActiveFile();
-		    if (!activeFile) return new Notice("No active note open.");
+	    callback: () => {
+		void this.syncCalendarCommand();
+	    }
+	});
+
+	this.addCommand({
+	    id: "update-timeline",
+	    name: "Update timeline",
+	    callback: () => {
+		void this.updateTimelineCommand();
+	    }
+	});
+
+	// ===== Time tracking commands =====
+
+	this.addCommand({
+	    id: "start-time-tracking",
+	    name: "Start time tracking",
+	    callback: () => { void this.startTimeTracking(); }
+	});
+
+	this.addCommand({
+	    id: "stop-time-tracking",
+	    name: "Stop time tracking",
+	    callback: () => { void this.stopTimeTracking(); }
+	});
+
+	// ===== Event CRUD commands =====
+
+	this.addCommand({
+	    id: "add-event",
+	    name: "Add event",
+	    callback: () => { void this.addEventCommand(); }
+	});
+
+	this.addCommand({
+	    id: "edit-event",
+	    name: "Edit event",
+	    callback: () => { void this.editEventCommand(); }
+	});
+
+	this.addCommand({
+	    id: "manage-rescheduled",
+	    name: "Manage rescheduled events",
+	    callback: () => { void this.manageRescheduledCommand(); }
+	});
+
+	this.addCommand({
+	    id: "add-unscheduled-task",
+	    name: "Add unscheduled task",
+	    callback: () => { void this.addUnscheduledTaskCommand(); }
+	});
+
+	this.addCommand({
+	    id: "manage-unscheduled-tasks",
+	    name: "Manage unscheduled tasks",
+	    callback: () => { void this.manageUnscheduledTasksCommand(); }
+	});
+
+	this.addCommand({
+	    id: "import-project-tasks",
+	    name: "Import project tasks",
+	    callback: () => { void this.importProjectTasksCommand(); }
+	});
+
+    }
+
+    private async syncCalendarCommand() {
+			try {
+			    const activeFile = this.app.workspace.getActiveFile();
+			    if (!activeFile) return new Notice("No active note open.");
 
 		    const dateStr = extractDateFromFilename(activeFile.name);
 		    if (!dateStr) return new Notice("Note title must start with a date like 2025-04-17");
@@ -91,12 +158,11 @@ export default class TascalPlugin extends Plugin {
 			failed: [] as string[],
 		    };
 
-		    for (const cal of this.settings.calendars) {
-			try {
-			    const res = await requestUrl({ url: cal.url });
-			    const jcalData = ICAL.parse(res.text);
-			    const comp = new ICAL.Component(jcalData);
-			    const events = extractEventsForDate(comp, localDate, this.settings.timezone);
+			    for (const cal of this.settings.calendars) {
+				try {
+				    const res = await requestUrl({ url: cal.url });
+				    const comp = ICAL.Component.fromString(res.text);
+				    const events = extractEventsForDate(comp, localDate, this.settings.timezone);
 			    for (const ev of events) {
 				incoming.push({
 				    summary: `(${cal.id}) ${ev.summary}`,
@@ -132,19 +198,15 @@ export default class TascalPlugin extends Plugin {
 			syncSummary.push(`Failed: ${syncStats.failed.join(", ")}`);
 		    }
 		    new Notice(syncSummary.join(" "), 8000);
-		} catch (error) {
-		    console.error("Failed to insert ICS events:", error);
-		    new Notice("Error occurred. See console.");
-		}
-	    }
-	});
+			} catch (error) {
+			    console.error("Failed to insert ICS events:", error);
+			    new Notice("Error occurred. See console.");
+			}
+    }
 
-	this.addCommand({
-	    id: "update-timeline",
-	    name: "Update timeline",
-	    callback: async () => {
-		const file = this.app.workspace.getActiveFile();
-		if (!file) return new Notice("No active file.");
+    private async updateTimelineCommand() {
+			const file = this.app.workspace.getActiveFile();
+			if (!file) return new Notice("No active file.");
 
 		const note = await this.app.vault.read(file);
 		const dateStr = extractDateFromFilename(file.name);
@@ -163,66 +225,12 @@ export default class TascalPlugin extends Plugin {
 			? `Timeline updated. Moved ${result.rescheduled.length} task(s) to future dates.`
 			: "Timeline updated.",
 		    6000
-		);
-	    }
-	});
-
-	// ===== Time tracking commands =====
-
-	this.addCommand({
-	    id: "start-time-tracking",
-	    name: "Start time tracking",
-	    callback: () => this.startTimeTracking()
-	});
-
-	this.addCommand({
-	    id: "stop-time-tracking",
-	    name: "Stop time tracking",
-	    callback: () => this.stopTimeTracking()
-	});
-
-	// ===== Event CRUD commands =====
-
-	this.addCommand({
-	    id: "add-event",
-	    name: "Add event",
-	    callback: () => this.addEventCommand()
-	});
-
-	this.addCommand({
-	    id: "edit-event",
-	    name: "Edit event",
-	    callback: () => this.editEventCommand()
-	});
-
-	this.addCommand({
-	    id: "manage-rescheduled",
-	    name: "Manage rescheduled events",
-	    callback: () => this.manageRescheduledCommand()
-	});
-
-	this.addCommand({
-	    id: "add-unscheduled-task",
-	    name: "Add unscheduled task",
-	    callback: () => this.addUnscheduledTaskCommand()
-	});
-
-	this.addCommand({
-	    id: "manage-unscheduled-tasks",
-	    name: "Manage unscheduled tasks",
-	    callback: () => this.manageUnscheduledTasksCommand()
-	});
-
-	this.addCommand({
-	    id: "import-project-tasks",
-	    name: "Import project tasks",
-	    callback: () => this.importProjectTasksCommand()
-	});
-
+			);
     }
 
     async loadSettings() {
-	this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const data = await this.loadData() as Partial<TascalSettings> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
     }
 
     async saveSettings() {
@@ -262,7 +270,7 @@ export default class TascalPlugin extends Plugin {
 
     // ===== Helper: get active date context =====
 
-    private getActiveDateContext(): { file: any; dateStr: string } | null {
+	    private getActiveDateContext(): { file: TFile; dateStr: string } | null {
 	const file = this.app.workspace.getActiveFile();
 	if (!file) {
 	    new Notice("No active note open.");
@@ -284,7 +292,7 @@ export default class TascalPlugin extends Plugin {
 	return updated;
     }
 
-    private async reRenderTimeline(file: any, dateStr: string, store: DayStore) {
+	    private async reRenderTimeline(file: TFile, dateStr: string, store: DayStore) {
 	const note = await this.app.vault.read(file);
 	await saveDayStore(this.app, dateStr, store);
 	const result = await buildTimeline(this.app, note, dateStr, this.settings, { skipCheckboxSync: true });
@@ -520,9 +528,10 @@ export default class TascalPlugin extends Plugin {
 
 	const modal = new EventSelectionModal(
 	    this.app, trackableEvents,
-	    async (event) => {
-		const startTime = DateTime.now().setZone(this.settings.timezone).toFormat("HH:mm");
-		const updatedEvent = startTracking(event, startTime);
+		    (event) => {
+			void (async () => {
+			const startTime = DateTime.now().setZone(this.settings.timezone).toFormat("HH:mm");
+			const updatedEvent = startTracking(event, startTime);
 
 		let updatedStore = updateEvent(store, event.id, {
 		    timeTracking: updatedEvent.timeTracking,
@@ -532,9 +541,10 @@ export default class TascalPlugin extends Plugin {
 		this.settings.currentTrackingEventId = event.id;
 		await this.saveSettings();
 
-		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-		new Notice(`Started tracking: ${event.summary}`);
-	    },
+			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+			new Notice(`Started tracking: ${event.summary}`);
+			})();
+		    },
 	    "Select Event to Track",
 	    "Track"
 	);
@@ -596,12 +606,12 @@ export default class TascalPlugin extends Plugin {
 	const templates = this.settings.eventTemplates || [];
 	const modal = new AddEventModal(
 	    this.app, this.settings.timezone, ctx.dateStr, templates,
-	    async (result) => { await this.handleAddEventResult(ctx, result); }
+		    (result) => { void this.handleAddEventResult(ctx, result); }
 	);
 	modal.open();
     }
 
-    private async handleAddEventResult(ctx: { file: any; dateStr: string }, result: AddEventResult) {
+	    private async handleAddEventResult(ctx: { file: TFile; dateStr: string }, result: AddEventResult) {
 	const newEvent = createManualEvent(result.summary, result.start, result.end);
 	let noteOutcome: string | null = null;
 
@@ -651,27 +661,32 @@ export default class TascalPlugin extends Plugin {
 	    (event) => {
 		const editModal = new EditEventModal(
 		    this.app, event,
-		    async (updates) => {
-			let updatedStore = updateEvent(store, event.id, updates);
+			    (updates) => {
+				void (async () => {
+				let updatedStore = updateEvent(store, event.id, updates);
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
 			if (updates.done !== undefined && updates.done !== event.done) {
 			    await this.syncSourceBackedItemState(event, ctx.dateStr, "event", updates.done);
 			}
-			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-			new Notice(`Updated: ${updates.summary || event.summary}`);
-		    },
-		    async () => {
-			let updatedStore = this.suppressAndRemove(store, event);
+				await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+				new Notice(`Updated: ${updates.summary || event.summary}`);
+				})();
+			    },
+			    () => {
+				void (async () => {
+				let updatedStore = this.suppressAndRemove(store, event);
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
 			await this.resetSourceBackedItem(event);
-			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-			new Notice(`Deleted: ${event.summary}`);
-		    },
+				await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+				new Notice(`Deleted: ${event.summary}`);
+				})();
+			    },
 		    () => {
 			const reschedModal = new RescheduleModal(
 			    this.app, event, this.settings.timezone,
-			    async (targetDate, newStart) => {
-				const start = newStart ? formatTime(newStart) : event.start;
+				    (targetDate, newStart) => {
+					void (async () => {
+					const start = newStart ? formatTime(newStart) : event.start;
 				const durationMinutes = timeToMinutes(event.end) - timeToMinutes(event.start);
 				const startDt = DateTime.fromFormat(start, "HH:mm");
 				const end = startDt.plus({ minutes: durationMinutes }).toFormat("HH:mm");
@@ -699,9 +714,10 @@ export default class TascalPlugin extends Plugin {
 				await saveDayStore(this.app, ctx.dateStr, updatedStore);
 				await this.updateSourceRegistryLocation(event, targetDate, "event", rescheduledEvent.id);
 
-				await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-				new Notice(`Rescheduled "${event.summary}" to ${targetDate} at ${start}.`, 7000);
-			    }
+					await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+					new Notice(`Rescheduled "${event.summary}" to ${targetDate} at ${start}.`, 7000);
+					})();
+				    }
 			);
 			reschedModal.open();
 		    }
@@ -741,9 +757,10 @@ export default class TascalPlugin extends Plugin {
 	    (entry) => {
 		const reschedModal = new RescheduleModal(
 		    this.app, entry.event, this.settings.timezone,
-		    async (newTargetDate, newStart) => {
-			if (newTargetDate === entry.targetDate) {
-			    new Notice("Same date selected — nothing changed.");
+			    (newTargetDate, newStart) => {
+				void (async () => {
+				if (newTargetDate === entry.targetDate) {
+				    new Notice("Same date selected — nothing changed.");
 			    return;
 			}
 
@@ -779,19 +796,22 @@ export default class TascalPlugin extends Plugin {
 			await saveDayStore(this.app, entry.targetDate, oldStore);
 			await this.updateSourceRegistryLocation(entry.event, newTargetDate, "event", rescheduledEvent.id);
 
-			new Notice(`Rescheduled "${entry.event.summary}" from ${entry.targetDate} to ${newTargetDate} at ${start}.`, 7000);
-		    }
+				new Notice(`Rescheduled "${entry.event.summary}" from ${entry.targetDate} to ${newTargetDate} at ${start}.`, 7000);
+				})();
+			    }
 		);
 		reschedModal.open();
 	    },
 	    // Delete
-	    async (entry) => {
-		let store = await loadDayStore(this.app, entry.targetDate);
+		    (entry) => {
+			void (async () => {
+			let store = await loadDayStore(this.app, entry.targetDate);
 		store = removeEvent(store, entry.event.id);
 		await saveDayStore(this.app, entry.targetDate, store);
-		await this.resetSourceBackedItem(entry.event);
-		new Notice(`Deleted rescheduled event: ${entry.event.summary}`);
-	    }
+			await this.resetSourceBackedItem(entry.event);
+			new Notice(`Deleted rescheduled event: ${entry.event.summary}`);
+			})();
+		    }
 	);
 	modal.open();
     }
@@ -800,13 +820,15 @@ export default class TascalPlugin extends Plugin {
 	const ctx = this.getActiveDateContext();
 	if (!ctx) return;
 
-	const modal = new AddUnscheduledTaskModal(this.app, async (result) => {
-	    let store = await loadDayStore(this.app, ctx.dateStr);
+		const modal = new AddUnscheduledTaskModal(this.app, (result) => {
+		    void (async () => {
+		    let store = await loadDayStore(this.app, ctx.dateStr);
 	    store = addUnscheduledTask(store, createUnscheduledTask(result.summary, result.estimateMinutes));
 	    await saveDayStore(this.app, ctx.dateStr, store);
-	    await this.reRenderTimeline(ctx.file, ctx.dateStr, store);
-	    new Notice(`Added unscheduled task: ${result.summary}`, 6000);
-	});
+		    await this.reRenderTimeline(ctx.file, ctx.dateStr, store);
+		    new Notice(`Added unscheduled task: ${result.summary}`, 6000);
+		    })();
+		});
 	modal.open();
     }
 
@@ -824,13 +846,15 @@ export default class TascalPlugin extends Plugin {
 	const modal = new UnscheduledTasksModal(
 	    this.app,
 	    tasks,
-	    async (task) => {
-		let updatedStore = updateUnscheduledTask(store, task.id, { done: !task.done });
+		    (task) => {
+			void (async () => {
+			let updatedStore = updateUnscheduledTask(store, task.id, { done: !task.done });
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
 		await this.syncSourceBackedItemState(task, ctx.dateStr, "unscheduled", !task.done);
-		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-		new Notice(`${task.done ? "Reopened" : "Completed"} unscheduled task: ${task.summary}`, 6000);
-	    },
+			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+			new Notice(`${task.done ? "Reopened" : "Completed"} unscheduled task: ${task.summary}`, 6000);
+			})();
+		    },
 	    (task) => {
 		const moveModal = new RescheduleModal(
 		    this.app,
@@ -844,8 +868,9 @@ export default class TascalPlugin extends Plugin {
 			timeTracking: [],
 		    },
 		    this.settings.timezone,
-		    async (targetDate) => {
-			let currentStore = await loadDayStore(this.app, ctx.dateStr);
+			    (targetDate) => {
+				void (async () => {
+				let currentStore = await loadDayStore(this.app, ctx.dateStr);
 			currentStore = removeUnscheduledTask(currentStore, task.id);
 			await saveDayStore(this.app, ctx.dateStr, currentStore);
 
@@ -861,15 +886,17 @@ export default class TascalPlugin extends Plugin {
 			await saveDayStore(this.app, targetDate, targetStore);
 			await this.updateSourceRegistryLocation(task, targetDate, "unscheduled", movedTask.id);
 
-			await this.reRenderTimeline(ctx.file, ctx.dateStr, currentStore);
-			new Notice(`Moved "${task.summary}" to ${targetDate}.`, 7000);
-		    }
+				await this.reRenderTimeline(ctx.file, ctx.dateStr, currentStore);
+				new Notice(`Moved "${task.summary}" to ${targetDate}.`, 7000);
+				})();
+			    }
 		);
 		moveModal.open();
 	    },
-	    (task) => {
-		const scheduleModal = new ScheduleUnscheduledTaskModal(this.app, task, async (start, durationMinutes) => {
-		    const end = DateTime.fromFormat(start, "HH:mm").plus({ minutes: durationMinutes }).toFormat("HH:mm");
+		    (task) => {
+			const scheduleModal = new ScheduleUnscheduledTaskModal(this.app, task, (start, durationMinutes) => {
+			    void (async () => {
+			    const end = DateTime.fromFormat(start, "HH:mm").plus({ minutes: durationMinutes }).toFormat("HH:mm");
 		    let updatedStore = await loadDayStore(this.app, ctx.dateStr);
 		    updatedStore = removeUnscheduledTask(updatedStore, task.id);
 		    const scheduledEvent = createManualEvent(task.summary, start, end, {
@@ -882,18 +909,21 @@ export default class TascalPlugin extends Plugin {
 		    updatedStore = addEvent(updatedStore, scheduledEvent);
 		    await saveDayStore(this.app, ctx.dateStr, updatedStore);
 		    await this.updateSourceRegistryLocation(task, ctx.dateStr, "event", scheduledEvent.id);
-		    await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-		    new Notice(`Scheduled "${task.summary}" for ${start}-${end}.`, 7000);
-		});
+			    await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+			    new Notice(`Scheduled "${task.summary}" for ${start}-${end}.`, 7000);
+			    })();
+			});
 		scheduleModal.open();
 	    },
-	    async (task) => {
-		let updatedStore = removeUnscheduledTask(store, task.id);
+		    (task) => {
+			void (async () => {
+			let updatedStore = removeUnscheduledTask(store, task.id);
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
 		await this.resetSourceBackedItem(task);
-		await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
-		new Notice(`Deleted unscheduled task: ${task.summary}`, 6000);
-	    }
+			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
+			new Notice(`Deleted unscheduled task: ${task.summary}`, 6000);
+			})();
+		    }
 	);
 	modal.open();
     }

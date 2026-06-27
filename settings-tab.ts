@@ -1,6 +1,6 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { DateTime } from "luxon";
-import { TascalSettings, EventTemplate, RecurringRule } from "./types";
+import { TascalSettings, EventTemplate } from "./types";
 import { getLatestCalendarSync } from "./store";
 import {
     buildTemplatePreview,
@@ -52,7 +52,7 @@ export class TascalSettingTab extends PluginSettingTab {
 	containerEl.empty();
 	containerEl.addClass("tascal-settings-root");
 
-	containerEl.createEl("h2", { text: "Tascal Settings" });
+		new Setting(containerEl).setName("Tascal Settings").setHeading();
 
 	this.renderSection(
 	    containerEl,
@@ -115,10 +115,10 @@ export class TascalSettingTab extends PluginSettingTab {
 	if (this.saveTimer !== null) {
 	    window.clearTimeout(this.saveTimer);
 	}
-	this.saveTimer = window.setTimeout(async () => {
-	    this.saveTimer = null;
-	    await this.plugin.saveSettings();
-	}, 400);
+		this.saveTimer = window.setTimeout(() => {
+		    this.saveTimer = null;
+		    void this.plugin.saveSettings();
+		}, 400);
     }
 
     private ensureSectionState(section: SectionKey): boolean {
@@ -298,10 +298,9 @@ export class TascalSettingTab extends PluginSettingTab {
 
 	this.plugin.settings.calendars.forEach((cal, index) => {
 	    const card = containerEl.createDiv({ cls: "tascal-template-card tascal-settings-card" });
-	    card.createEl("h4", {
-		text: cal.id.trim() || `Calendar ${index + 1}`,
-		cls: "tascal-template-title"
-	    });
+		    new Setting(card)
+			.setName(cal.id.trim() || `Calendar ${index + 1}`)
+			.setHeading();
 
 	    const idSetting = new Setting(card).setName("Label").setDesc("Shown as the calendar prefix in timeline entries.");
 	    const idStatus = this.createStatusHost(idSetting);
@@ -329,17 +328,16 @@ export class TascalSettingTab extends PluginSettingTab {
 		this.renderMessages(urlStatus, validateCalendarUrl(cal.url).messages);
 	    });
 
-	    new Setting(card)
-		.addExtraButton((btn) =>
-		    btn
-			.setIcon("trash")
-			.setTooltip("Remove calendar")
-			.onClick(async () => {
-			    this.plugin.settings.calendars.splice(index, 1);
-			    await this.plugin.saveSettings();
-			    this.display();
-			})
-		);
+		    new Setting(card)
+			.addButton((btn) =>
+			    btn
+				.setButtonText("Remove calendar")
+				.setWarning()
+				.onClick(() => {
+				    this.plugin.settings.calendars.splice(index, 1);
+				    void this.plugin.saveSettings().then(() => this.display());
+				})
+			);
 	});
 
 	new Setting(containerEl)
@@ -347,11 +345,10 @@ export class TascalSettingTab extends PluginSettingTab {
 		btn
 		    .setButtonText("+ Add Calendar")
 		    .setCta()
-		    .onClick(async () => {
-			this.plugin.settings.calendars.push({ id: "", url: "" });
-			await this.plugin.saveSettings();
-			this.display();
-		    })
+		    .onClick(() => {
+				this.plugin.settings.calendars.push({ id: "", url: "" });
+				void this.plugin.saveSettings().then(() => this.display());
+			    })
 	    );
     }
 
@@ -386,7 +383,7 @@ export class TascalSettingTab extends PluginSettingTab {
 	this.renderMessages(defaultStatusHost, validateTimeRange(this.plugin.settings.defaultDayStart, this.plugin.settings.defaultDayEnd).messages);
 	defaultStatusHost.addClass("tascal-setting-status");
 
-	containerEl.createEl("h4", { text: "Per-day overrides", cls: "tascal-subheading" });
+		new Setting(containerEl).setName("Per-day overrides").setHeading();
 	for (const day of WEEK_DAYS) {
 	    const override = this.plugin.settings.dayOverrides[day] || { start: "", end: "" };
 	    const setting = new Setting(containerEl).setName(day);
@@ -439,10 +436,9 @@ export class TascalSettingTab extends PluginSettingTab {
 
 	rules.forEach((rule, index) => {
 	    const card = containerEl.createDiv({ cls: "tascal-template-card tascal-settings-card" });
-	    card.createEl("h4", {
-		text: rule.summary || `Rule ${index + 1}`,
-		cls: "tascal-template-title"
-	    });
+		    new Setting(card)
+			.setName(rule.summary || `Rule ${index + 1}`)
+			.setHeading();
 
 	    const preview = card.createEl("p", {
 		text: summarizeRule(rule),
@@ -498,13 +494,12 @@ export class TascalSettingTab extends PluginSettingTab {
 		    dd.addOption("weekly", "Weekly");
 		    dd.addOption("monthly", "Monthly");
 		    dd.setValue(rule.recurrence.type);
-		    dd.onChange(async (value) => {
-			this.plugin.settings.recurringRules[index].recurrence = value === "weekly"
-			    ? { type: "weekly", days: [] }
-			    : { type: "monthly", day: 1 };
-			await this.plugin.saveSettings();
-			this.display();
-		    });
+			    dd.onChange((value) => {
+				this.plugin.settings.recurringRules[index].recurrence = value === "weekly"
+				    ? { type: "weekly", days: [] }
+				    : { type: "monthly", day: 1 };
+				void this.plugin.saveSettings().then(() => this.display());
+			    });
 		});
 
 	    if (rule.recurrence.type === "weekly") {
@@ -533,13 +528,14 @@ export class TascalSettingTab extends PluginSettingTab {
 		    });
 		}
 		this.renderMessages(daysStatus, validateWeeklyDays(rule.recurrence.days).messages);
-	    } else {
-		const monthlySetting = new Setting(card)
-		    .setName("Day of month")
-		    .setDesc("Negative values count backward from the end of the month.");
-		const monthlyStatus = this.createStatusHost(monthlySetting);
-		monthlySetting.addText((text) => {
-		    text.setPlaceholder("15").setValue(String(rule.recurrence.day)).onChange((value) => {
+		    } else {
+			const monthlyRecurrence = rule.recurrence;
+			const monthlySetting = new Setting(card)
+			    .setName("Day of month")
+			    .setDesc("Negative values count backward from the end of the month.");
+			const monthlyStatus = this.createStatusHost(monthlySetting);
+			monthlySetting.addText((text) => {
+			    text.setPlaceholder("15").setValue(String(monthlyRecurrence.day)).onChange((value) => {
 			const validation = validateMonthlyDay(value);
 			this.renderMessages(monthlyStatus, validation.messages);
 			if (validation.ok && validation.normalized !== undefined) {
@@ -550,10 +546,10 @@ export class TascalSettingTab extends PluginSettingTab {
 				this.scheduleSave();
 			    }
 			}
-		    });
-		    this.renderMessages(monthlyStatus, validateMonthlyDay(rule.recurrence.day).messages);
-		});
-	    }
+			    });
+			    this.renderMessages(monthlyStatus, validateMonthlyDay(monthlyRecurrence.day).messages);
+			});
+		    }
 
 	    const exceptionsSetting = new Setting(card)
 		.setName("Exceptions")
@@ -576,11 +572,10 @@ export class TascalSettingTab extends PluginSettingTab {
 		    btn
 			.setButtonText("Remove Rule")
 			.setWarning()
-			.onClick(async () => {
-			    this.plugin.settings.recurringRules.splice(index, 1);
-			    await this.plugin.saveSettings();
-			    this.display();
-			})
+				.onClick(() => {
+				    this.plugin.settings.recurringRules.splice(index, 1);
+				    void this.plugin.saveSettings().then(() => this.display());
+				})
 		);
 	});
 
@@ -589,17 +584,16 @@ export class TascalSettingTab extends PluginSettingTab {
 		btn
 		    .setButtonText("+ Add Recurring Rule")
 		    .setCta()
-		    .onClick(async () => {
-			this.plugin.settings.recurringRules.push({
-			    id: crypto.randomUUID(),
-			    summary: "",
+			    .onClick(() => {
+				this.plugin.settings.recurringRules.push({
+				    id: crypto.randomUUID(),
+				    summary: "",
 			    start: "09:00",
-			    duration: 60,
-			    recurrence: { type: "weekly", days: [] },
-			});
-			await this.plugin.saveSettings();
-			this.display();
-		    })
+				    duration: 60,
+				    recurrence: { type: "weekly", days: [] },
+				});
+				void this.plugin.saveSettings().then(() => this.display());
+			    })
 	    );
     }
 
@@ -616,10 +610,9 @@ export class TascalSettingTab extends PluginSettingTab {
 
 	templates.forEach((template, index) => {
 	    const card = containerEl.createDiv({ cls: "tascal-template-card tascal-settings-card" });
-	    card.createEl("h4", {
-		text: template.label || `Template ${index + 1}`,
-		cls: "tascal-template-title"
-	    });
+		    new Setting(card)
+			.setName(template.label || `Template ${index + 1}`)
+			.setHeading();
 
 	    let namePatternDraft = template.namePattern;
 	    let folderDraft = template.folder;
@@ -634,7 +627,8 @@ export class TascalSettingTab extends PluginSettingTab {
 	    const refreshPreview = () => {
 		previewEl.empty();
 		const previewTemplate = buildCandidateTemplate();
-		const preview = buildTemplatePreview(previewTemplate, DateTime.now().toISODate()!, this.plugin.settings.timezone);
+			const today = DateTime.now().toISODate() ?? "";
+			const preview = buildTemplatePreview(previewTemplate, today, this.plugin.settings.timezone);
 		previewEl.createEl("div", { text: `${preview.start}-${preview.end} ${preview.summary}`, cls: "tascal-preview-line" });
 		previewEl.createEl("div", { text: preview.path, cls: "tascal-preview-line tascal-preview-line-muted" });
 	    };
@@ -759,11 +753,10 @@ export class TascalSettingTab extends PluginSettingTab {
 		    btn
 			.setButtonText("Remove Template")
 			.setWarning()
-			.onClick(async () => {
-			    this.plugin.settings.eventTemplates.splice(index, 1);
-			    await this.plugin.saveSettings();
-			    this.display();
-			})
+				.onClick(() => {
+				    this.plugin.settings.eventTemplates.splice(index, 1);
+				    void this.plugin.saveSettings().then(() => this.display());
+				})
 		);
 	});
 
@@ -772,22 +765,21 @@ export class TascalSettingTab extends PluginSettingTab {
 		btn
 		    .setButtonText("+ Add Template")
 		    .setCta()
-		    .onClick(async () => {
-			this.plugin.settings.eventTemplates.push({
-			    id: crypto.randomUUID(),
-			    shortcode: "",
+			    .onClick(() => {
+				this.plugin.settings.eventTemplates.push({
+				    id: crypto.randomUUID(),
+				    shortcode: "",
 			    label: "",
-			    namePattern: "{{date}}",
-			    createNote: false,
-			});
-			await this.plugin.saveSettings();
-			this.display();
-		    })
+				    namePattern: "{{date}}",
+				    createNote: false,
+				});
+				void this.plugin.saveSettings().then(() => this.display());
+			    })
 	    );
     }
 
     private renderTemplatePathStatus(template: EventTemplate, host: HTMLElement): boolean {
-	const validation = validateTemplatePath(template, DateTime.now().toISODate()!, this.plugin.settings.timezone);
+		const validation = validateTemplatePath(template, DateTime.now().toISODate() ?? "", this.plugin.settings.timezone);
 	this.renderMessages(host, validation.messages);
 	return validation.ok;
     }

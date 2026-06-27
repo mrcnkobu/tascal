@@ -1,9 +1,9 @@
 {
 	"id": "tascal",
 	"name": "Tascal",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Calendar-driven daily planning, timeline rendering, and time tracking for Obsidian",
+	"description": "Calendar-driven daily planning, timeline rendering, and time tracking.",
 	"author": "mkobu",
 	"authorUrl": "",
 	"isDesktopOnly": false

@@ -367,7 +367,7 @@ export class AddEventModal extends Modal {
 	cancelBtn.addEventListener("click", () => this.close());
 
 	// Focus quick-add on open
-	setTimeout(() => quickInput.focus(), 50);
+	window.setTimeout(() => quickInput.focus(), 50);
 	refreshPreview();
     }
 
@@ -545,13 +545,15 @@ export class ImportSourceTasksModal extends Modal {
 		}
 
 		const btn = right.createEl("button", { cls: "tascal-import-btn", text: "Import" });
-		btn.addEventListener("click", async () => {
-		    btn.disabled = true;
-		    btn.setText("Importing…");
-		    await this.onImport(candidate);
-		    row.addClass("tascal-import-row--done");
-		    btn.remove();
-		    right.createEl("span", { cls: "tascal-import-check", text: "✓ Imported" });
+		btn.addEventListener("click", () => {
+		    void (async () => {
+			    btn.disabled = true;
+			    btn.setText("Importing…");
+			    await this.onImport(candidate);
+			    row.addClass("tascal-import-row--done");
+			    btn.remove();
+			    right.createEl("span", { cls: "tascal-import-check", text: "✓ Imported" });
+		    })();
 		});
 	    }
 	}
@@ -1112,7 +1114,7 @@ export class QuickAddModal extends Modal {
 	    }
 	});
 
-	setTimeout(() => input.focus(), 50);
+	window.setTimeout(() => input.focus(), 50);
     }
 
     private parseQuickAdd(text: string): AddEventResult | null {

@@ -1,7 +1,7 @@
 {
 	"name": "tascal",
-	"version": "1.0.0",
-	"description": "A calendar-driven daily planner and time tracker for Obsidian",
+	"version": "1.0.1",
+	"description": "A calendar-driven daily planner and time tracker.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
@@ -14,7 +14,6 @@
 	"devDependencies": {
 		"@types/luxon": "^3.6.2",
 		"@types/node": "^20.11.0",
-		"builtin-modules": "^3.3.0",
 		"esbuild": "^0.20.0",
 		"obsidian": "latest",
 		"typescript": "^5.3.0"

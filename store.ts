@@ -1,6 +1,6 @@
 import { App } from "obsidian";
 import { DateTime } from "luxon";
-import { StoredEvent, DayStore, TascalSettings, RecurringRule, TimeTrackingEntry, UnscheduledTask } from "./types";
+import { StoredEvent, DayStore, TascalSettings, RecurringRule, UnscheduledTask } from "./types";
 import { formatDuration } from "./utils";
 
 const DAYS_DIR = ".tascal/days";
@@ -333,14 +333,13 @@ export function renderTimeline(
     let completedTasks = 0;
     let totalMinutes = 0;
     let elapsedMinutes = 0;
-    let remainingMinutes = 0;
     let totalTrackedMinutes = 0;
 
     const eventLines: string[] = [];
-    let previousEnd: string | null = null;
+    let previousEnd = "";
 
     for (const ev of sorted) {
-	const overlapMinutes = previousEnd && ev.start < previousEnd
+	const overlapMinutes = previousEnd !== "" && ev.start < previousEnd
 	    ? timeToMinutes(previousEnd) - timeToMinutes(ev.start)
 	    : 0;
 
@@ -404,7 +403,7 @@ export function renderTimeline(
 	if (ev.end > cursor) {
 	    cursor = ev.end;
 	}
-	previousEnd = previousEnd && previousEnd > ev.end ? previousEnd : ev.end;
+	previousEnd = previousEnd !== "" && previousEnd > ev.end ? previousEnd : ev.end;
 
 	// Stats
 	const blockMinutes = timeToMinutes(ev.end) - timeToMinutes(ev.start);
@@ -413,8 +412,6 @@ export function renderTimeline(
 	if (ev.done) {
 	    completedTasks++;
 	    elapsedMinutes += blockMinutes;
-	} else {
-	    remainingMinutes += blockMinutes;
 	}
 
 	// Tracked time

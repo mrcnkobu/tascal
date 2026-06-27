@@ -311,10 +311,17 @@ async function updateSourceTaskByCandidate(
 	return { ok: false, sourcePath: candidate.sourcePath };
     }
 
-    const line = renderSourceTaskLine(target.summary, nextStatus, {
+    const nextMetadata: Record<string, string> = {};
+    for (const [key, value] of Object.entries({
 	...target.metadata,
 	...metadataUpdates,
-    });
+    })) {
+	if (value !== undefined) {
+	    nextMetadata[key] = value;
+	}
+    }
+
+    const line = renderSourceTaskLine(target.summary, nextStatus, nextMetadata);
 
     parsed.lines[target.lineIndex] = line;
     await app.vault.modify(file, parsed.lines.join("\n"));
