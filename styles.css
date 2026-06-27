@@ -224,6 +224,164 @@ If your plugin does not need CSS, delete this file.
     margin-bottom: 12px;
 }
 
+/* ===== Import Project Tasks Modal ===== */
+
+.tascal-import-modal {
+    max-width: 620px;
+}
+
+.tascal-import-description {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-bottom: 16px;
+    margin-top: -4px;
+}
+
+.tascal-import-list {
+    max-height: 420px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.tascal-import-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.tascal-import-group-header {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--text-muted);
+    padding: 0 2px 4px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tascal-import-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+    border: 1px solid transparent;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tascal-import-row:hover {
+    border-color: var(--background-modifier-border);
+    background-color: var(--background-modifier-hover);
+}
+
+.tascal-import-row--done {
+    opacity: 0.5;
+}
+
+.tascal-import-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.tascal-import-summary {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tascal-import-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.tascal-import-meta-sep {
+    opacity: 0.4;
+}
+
+.tascal-import-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.tascal-import-estimate {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--interactive-accent);
+    background-color: rgba(var(--interactive-accent-rgb), 0.1);
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.tascal-import-btn {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s ease, transform 0.1s ease;
+    white-space: nowrap;
+}
+
+.tascal-import-btn:hover {
+    background-color: var(--interactive-accent-hover);
+}
+
+.tascal-import-btn:active {
+    transform: scale(0.96);
+}
+
+.tascal-import-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.tascal-import-check {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-green);
+}
+
+.tascal-import-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 4px;
+}
+
+.tascal-import-done-btn {
+    background-color: var(--background-modifier-border);
+    color: var(--text-normal);
+    border: none;
+    border-radius: 6px;
+    padding: 8px 24px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.tascal-import-done-btn:hover {
+    background-color: var(--background-modifier-border-hover);
+}
+
 .tascal-label {
     display: block;
     font-weight: 600;

@@ -489,9 +489,9 @@ export class AddUnscheduledTaskModal extends Modal {
 
 export class ImportSourceTasksModal extends Modal {
     private candidates: SourceTaskCandidate[];
-    private onImport: (candidate: SourceTaskCandidate) => void;
+    private onImport: (candidate: SourceTaskCandidate) => Promise<void>;
 
-    constructor(app: App, candidates: SourceTaskCandidate[], onImport: (candidate: SourceTaskCandidate) => void) {
+    constructor(app: App, candidates: SourceTaskCandidate[], onImport: (candidate: SourceTaskCandidate) => Promise<void>) {
 	super(app);
 	this.candidates = candidates;
 	this.onImport = onImport;
@@ -500,44 +500,65 @@ export class ImportSourceTasksModal extends Modal {
     onOpen() {
 	const { contentEl } = this;
 	contentEl.empty();
-	contentEl.addClass("tascal-modal");
+	contentEl.addClass("tascal-modal", "tascal-import-modal");
+
 	contentEl.createEl("h2", { text: "Import Project Tasks" });
+	contentEl.createEl("p", {
+	    text: "Select tasks to add to today's unscheduled list. You can import multiple tasks before closing.",
+	    cls: "tascal-import-description"
+	});
 
-	const container = contentEl.createEl("div", { cls: "event-selection-container" });
-	if (this.candidates.length === 0) {
-	    container.createEl("p", {
-		text: "No importable project tasks found.",
-		cls: "no-events-message"
-	    });
-	} else {
-	    for (const candidate of this.candidates) {
-		const itemDiv = container.createEl("div", { cls: "event-option" });
-		const projectDiv = itemDiv.createEl("div", { cls: "event-date" });
-		projectDiv.setText(candidate.projectId);
+	const list = contentEl.createEl("div", { cls: "tascal-import-list" });
 
-		const summaryDiv = itemDiv.createEl("div", { cls: "event-summary" });
-		const estimate = candidate.estimateMinutes ? ` (${candidate.estimateMinutes}m)` : "";
-		summaryDiv.setText(`${candidate.summary}${estimate}`);
+	// Group by project
+	const byProject = new Map<string, SourceTaskCandidate[]>();
+	for (const c of this.candidates) {
+	    const group = byProject.get(c.projectId) ?? [];
+	    group.push(c);
+	    byProject.set(c.projectId, group);
+	}
 
-		const sourceDiv = itemDiv.createEl("div", { cls: "event-status" });
-		sourceDiv.setText(candidate.sourcePath);
+	for (const [projectId, tasks] of byProject) {
+	    const groupEl = list.createEl("div", { cls: "tascal-import-group" });
+	    groupEl.createEl("div", { cls: "tascal-import-group-header", text: projectId });
 
-		const importBtn = itemDiv.createEl("button", {
-		    text: "Import",
-		    cls: "track-button"
-		});
-		importBtn.addEventListener("click", () => {
-		    this.onImport(candidate);
-		    this.close();
+	    for (const candidate of tasks) {
+		const row = groupEl.createEl("div", { cls: "tascal-import-row" });
+
+		const body = row.createEl("div", { cls: "tascal-import-body" });
+		body.createEl("div", { cls: "tascal-import-summary", text: candidate.summary });
+
+		const sourceFile = candidate.sourcePath.split("/").pop() ?? candidate.sourcePath;
+		const meta = body.createEl("div", { cls: "tascal-import-meta" });
+		meta.createEl("span", { cls: "tascal-import-source", text: sourceFile });
+		if (candidate.availableFrom) {
+		    meta.createEl("span", { cls: "tascal-import-meta-sep", text: "·" });
+		    meta.createEl("span", { cls: "tascal-import-from", text: `from ${candidate.availableFrom}` });
+		}
+
+		const right = row.createEl("div", { cls: "tascal-import-right" });
+		if (candidate.estimateMinutes) {
+		    right.createEl("span", {
+			cls: "tascal-import-estimate",
+			text: `${candidate.estimateMinutes} min`
+		    });
+		}
+
+		const btn = right.createEl("button", { cls: "tascal-import-btn", text: "Import" });
+		btn.addEventListener("click", async () => {
+		    btn.disabled = true;
+		    btn.setText("Importing…");
+		    await this.onImport(candidate);
+		    row.addClass("tascal-import-row--done");
+		    btn.remove();
+		    right.createEl("span", { cls: "tascal-import-check", text: "✓ Imported" });
 		});
 	    }
 	}
 
-	const cancelBtn = contentEl.createEl("button", {
-	    text: "Close",
-	    cls: "cancel-button"
-	});
-	cancelBtn.addEventListener("click", () => this.close());
+	const footer = contentEl.createEl("div", { cls: "tascal-import-footer" });
+	const doneBtn = footer.createEl("button", { cls: "tascal-import-done-btn", text: "Done" });
+	doneBtn.addEventListener("click", () => this.close());
     }
 
     onClose() {
