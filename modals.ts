@@ -30,6 +30,7 @@ export class EventSelectionModal extends Modal {
     onOpen() {
 	const { contentEl } = this;
 	contentEl.empty();
+	contentEl.addClass("tascal-modal");
 
 	contentEl.createEl("h2", { text: this.title });
 
@@ -52,8 +53,8 @@ export class EventSelectionModal extends Modal {
 		const summaryDiv = eventDiv.createEl("div", { cls: "event-summary" });
 		summaryDiv.setText(event.summary);
 
-		const statusDiv = eventDiv.createEl("div", { cls: "event-status" });
 		if (event.done) {
+		    const statusDiv = eventDiv.createEl("div", { cls: "event-status" });
 		    statusDiv.createEl("span", {
 			text: "done",
 			cls: "status-completed",
@@ -158,10 +159,6 @@ export class AddEventModal extends Modal {
 	let startInput: TextComponent | null = null;
 	let endInput: TextComponent | null = null;
 	let createNoteToggle: ToggleComponent | null = null;
-
-	const previewBox = contentEl.createDiv({ cls: "tascal-preview-box" });
-	const previewText = previewBox.createEl("div", { cls: "tascal-preview-line" });
-	const previewMeta = previewBox.createEl("div", { cls: "tascal-preview-line tascal-preview-line-muted" });
 
 	const refreshPreview = () => {
 	    if (!summary.trim() || !startVal.trim()) {
@@ -296,6 +293,11 @@ export class AddEventModal extends Modal {
 			refreshPreview();
 		    });
 	    });
+
+	// Live preview of the resulting event, shown just above the actions.
+	const previewBox = contentEl.createDiv({ cls: "tascal-preview-box" });
+	const previewText = previewBox.createEl("div", { cls: "tascal-preview-line" });
+	const previewMeta = previewBox.createEl("div", { cls: "tascal-preview-line tascal-preview-line-muted" });
 
 	// Submit button
 	const btnContainer = contentEl.createEl("div", { cls: "tascal-btn-row" });
@@ -520,7 +522,22 @@ export class ImportSourceTasksModal extends Modal {
 
 	for (const [projectId, tasks] of byProject) {
 	    const groupEl = list.createEl("div", { cls: "tascal-import-group" });
-	    groupEl.createEl("div", { cls: "tascal-import-group-header", text: projectId });
+
+	    // Prefer the source note's name as the human-facing header; fall back
+	    // to the raw project id when a group spans multiple notes.
+	    const noteNames = new Set(
+		tasks.map(t => {
+		    const file = t.sourcePath.split("/").pop() ?? t.sourcePath;
+		    return file.replace(/\.md$/i, "");
+		})
+	    );
+	    const displayName = noteNames.size === 1 ? [...noteNames][0] : projectId;
+
+	    const header = groupEl.createEl("div", { cls: "tascal-import-group-header" });
+	    header.createEl("span", { cls: "tascal-import-group-name", text: displayName });
+	    if (displayName !== projectId) {
+		header.createEl("span", { cls: "tascal-import-group-id", text: projectId });
+	    }
 
 	    for (const candidate of tasks) {
 		const row = groupEl.createEl("div", { cls: "tascal-import-row" });
@@ -667,7 +684,7 @@ export class EditEventModal extends Modal {
 	// Delete button
 	const deleteBtn = contentEl.createEl("button", {
 	    text: "Delete Event",
-	    cls: "tascal-delete-btn"
+	    cls: "tascal-delete-btn tascal-delete-btn--block"
 	});
 	deleteBtn.addEventListener("click", () => {
 	    this.onDelete();
@@ -712,10 +729,6 @@ export class RescheduleModal extends Modal {
 
 	let targetDate = DateTime.now().setZone(this.timezone).plus({ days: 1 }).toISODate()!;
 	let newStart = "";
-
-	const previewBox = contentEl.createDiv({ cls: "tascal-preview-box" });
-	const previewText = previewBox.createEl("div", { cls: "tascal-preview-line" });
-	const previewMeta = previewBox.createEl("div", { cls: "tascal-preview-line tascal-preview-line-muted" });
 
 	const refreshPreview = () => {
 	    const dateValidation = validateIsoDate(targetDate);
@@ -763,6 +776,11 @@ export class RescheduleModal extends Modal {
 		    newStart = v;
 		    refreshPreview();
 		}));
+
+	// Live preview of the move, shown just above the actions.
+	const previewBox = contentEl.createDiv({ cls: "tascal-preview-box" });
+	const previewText = previewBox.createEl("div", { cls: "tascal-preview-line" });
+	const previewMeta = previewBox.createEl("div", { cls: "tascal-preview-line tascal-preview-line-muted" });
 
 	const btnContainer = contentEl.createEl("div", { cls: "tascal-btn-row" });
 
@@ -993,6 +1011,7 @@ export class RescheduledEventsModal extends Modal {
     onOpen() {
 	const { contentEl } = this;
 	contentEl.empty();
+	contentEl.addClass("tascal-modal");
 
 	contentEl.createEl("h2", { text: "Rescheduled Events" });
 

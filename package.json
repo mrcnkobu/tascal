@@ -1,6 +1,6 @@
 {
 	"name": "tascal",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"description": "A calendar-driven daily planner and time tracker.",
 	"main": "main.js",
 	"scripts": {
@@ -8,7 +8,12 @@
 		"build": "node esbuild.config.mjs production",
 		"deploy": ". ./.env && npm run build && cp main.js manifest.json styles.css \"$OBSIDIAN_VAULT/.obsidian/plugins/tascal/\" && cp main.js manifest.json styles.css \"$OBSIDIAN_VAULT_MAIN/.obsidian/plugins/tascal/\""
 	},
-	"keywords": ["obsidian", "calendar", "planner", "time-tracking"],
+	"keywords": [
+		"obsidian",
+		"calendar",
+		"planner",
+		"time-tracking"
+	],
 	"author": "mkobu",
 	"license": "MIT",
 	"devDependencies": {

@@ -256,6 +256,14 @@ Copy `main.js`, `manifest.json`, and `styles.css` into your vault's plugin direc
 - Daily-note sections managed by Tascal should be treated as generated output.
 - Project inbox scanning is intentionally strict: only configured directories, only notes with `tascal-project-id`, and only tasks inside inbox markers are considered.
 
+## Changelog
+
+### 1.0.4
+
+- Modal polish: consistent modal widths and header spacing, live event/reschedule previews moved below their input fields, and fixed delete-button placement in the unscheduled-task and rescheduled-event lists.
+- Import Project Tasks: group headers now show the source note name (falling back to the project id) for easier scanning.
+- Performance: calendar feeds are now fetched in parallel during sync, and recurring-event expansion skips unnecessary work for out-of-range occurrences.
+
 ## License
 
 MIT

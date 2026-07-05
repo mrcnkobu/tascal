@@ -158,25 +158,36 @@ export default class TascalPlugin extends Plugin {
 			failed: [] as string[],
 		    };
 
-			    for (const cal of this.settings.calendars) {
-				try {
-				    const res = await requestUrl({ url: cal.url });
-				    const comp = ICAL.Component.fromString(res.text);
-				    const events = extractEventsForDate(comp, localDate, this.settings.timezone);
-			    for (const ev of events) {
-				incoming.push({
-				    summary: `(${cal.id}) ${ev.summary}`,
-				    start: ev.start.toFormat("HH:mm"),
-				    end: ev.end.toFormat("HH:mm"),
-				    icsUid: ev.uid,
-				});
+			    // Fetch all calendars in parallel; each result keeps its own success/failure.
+			    const calendarResults = await Promise.all(
+				this.settings.calendars.map(async (cal) => {
+				    try {
+					const res = await requestUrl({ url: cal.url });
+					const comp = ICAL.Component.fromString(res.text);
+					const events = extractEventsForDate(comp, localDate, this.settings.timezone);
+					return { ok: true as const, cal, events };
+				    } catch (e) {
+					console.error(`Failed to load calendar ${cal.id}:`, e);
+					return { ok: false as const, cal };
+				    }
+				})
+			    );
+
+			    for (const result of calendarResults) {
+				if (!result.ok) {
+				    syncStats.failed.push(result.cal.id || result.cal.url);
+				    continue;
+				}
+				for (const ev of result.events) {
+				    incoming.push({
+					summary: `(${result.cal.id}) ${ev.summary}`,
+					start: ev.start.toFormat("HH:mm"),
+					end: ev.end.toFormat("HH:mm"),
+					icsUid: ev.uid,
+				    });
+				}
+				syncStats.succeeded += 1;
 			    }
-			    syncStats.succeeded += 1;
-			} catch (e) {
-			    console.error(`Failed to load calendar ${cal.id}:`, e);
-			    syncStats.failed.push(cal.id || cal.url);
-			}
-		    }
 
 		    // Merge into store
 		    let store = await loadDayStore(this.app, dateStr);

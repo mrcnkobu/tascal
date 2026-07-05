@@ -8,6 +8,8 @@ export function extractEventsForDate(
     timezone: string
 ): EventData[] {
     const endOfDay = localDate.endOf("day");
+    const startOfDayMs = localDate.startOf("day").toMillis();
+    const endOfDayMs = endOfDay.toMillis();
 
     const vevents = calendar.getAllSubcomponents("vevent");
     const events: EventData[] = [];
@@ -66,17 +68,19 @@ export function extractEventsForDate(
 	    let next;
 	    while ((next = iterator.next())) {
 		const occJs = next.toJSDate();
-		const occ = DateTime.fromJSDate(occJs, { zone: timezone });
-
-		if (occ > endOfDay) break;
-		if (!occ.hasSame(localDate, "day")) continue;
-
 		const timestamp = occJs.getTime();
+
+		// Cheap timestamp bounds check before the (relatively costly) Luxon
+		// conversion. Occurrences before the target day are skipped without
+		// allocating a DateTime; once past end-of-day we can stop entirely.
+		if (timestamp > endOfDayMs) break;
+		if (timestamp < startOfDayMs) continue;
 
 		// skip if overridden or excluded
 		if (overriddenByUid[uid]?.has(timestamp)) continue;
 		if (exdatesByUid[uid]?.has(timestamp)) continue;
 
+		const occ = DateTime.fromJSDate(occJs, { zone: timezone });
 		const durationSecs = event.duration.toSeconds();
 		events.push({
 		    summary: event.summary,
