@@ -544,7 +544,7 @@ export default class TascalPlugin extends Plugin {
 			const startTime = DateTime.now().setZone(this.settings.timezone).toFormat("HH:mm");
 			const updatedEvent = startTracking(event, startTime);
 
-		let updatedStore = updateEvent(store, event.id, {
+		const updatedStore = updateEvent(store, event.id, {
 		    timeTracking: updatedEvent.timeTracking,
 		});
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
@@ -596,7 +596,7 @@ export default class TascalPlugin extends Plugin {
 	const durationStr = `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
 
 	const updatedEvent = stopTracking(event, durationStr);
-	let updatedStore = updateEvent(store, event.id, {
+	const updatedStore = updateEvent(store, event.id, {
 	    timeTracking: updatedEvent.timeTracking,
 	});
 	await saveDayStore(this.app, ctx.dateStr, updatedStore);
@@ -610,7 +610,7 @@ export default class TascalPlugin extends Plugin {
 
     // ===== Event CRUD =====
 
-    async addEventCommand() {
+    addEventCommand() {
 	const ctx = this.getActiveDateContext();
 	if (!ctx) return;
 
@@ -674,7 +674,7 @@ export default class TascalPlugin extends Plugin {
 		    this.app, event,
 			    (updates) => {
 				void (async () => {
-				let updatedStore = updateEvent(store, event.id, updates);
+				const updatedStore = updateEvent(store, event.id, updates);
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
 			if (updates.done !== undefined && updates.done !== event.done) {
 			    await this.syncSourceBackedItemState(event, ctx.dateStr, "event", updates.done);
@@ -685,7 +685,7 @@ export default class TascalPlugin extends Plugin {
 			    },
 			    () => {
 				void (async () => {
-				let updatedStore = this.suppressAndRemove(store, event);
+				const updatedStore = this.suppressAndRemove(store, event);
 			await saveDayStore(this.app, ctx.dateStr, updatedStore);
 			await this.resetSourceBackedItem(event);
 				await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
@@ -721,7 +721,7 @@ export default class TascalPlugin extends Plugin {
 				targetStore = addEvent(targetStore, rescheduledEvent);
 				await saveDayStore(this.app, targetDate, targetStore);
 
-				let updatedStore = this.suppressAndRemove(store, event);
+				const updatedStore = this.suppressAndRemove(store, event);
 				await saveDayStore(this.app, ctx.dateStr, updatedStore);
 				await this.updateSourceRegistryLocation(event, targetDate, "event", rescheduledEvent.id);
 
@@ -827,7 +827,7 @@ export default class TascalPlugin extends Plugin {
 	modal.open();
     }
 
-    async addUnscheduledTaskCommand() {
+    addUnscheduledTaskCommand() {
 	const ctx = this.getActiveDateContext();
 	if (!ctx) return;
 
@@ -859,7 +859,7 @@ export default class TascalPlugin extends Plugin {
 	    tasks,
 		    (task) => {
 			void (async () => {
-			let updatedStore = updateUnscheduledTask(store, task.id, { done: !task.done });
+			const updatedStore = updateUnscheduledTask(store, task.id, { done: !task.done });
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
 		await this.syncSourceBackedItemState(task, ctx.dateStr, "unscheduled", !task.done);
 			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);
@@ -928,7 +928,7 @@ export default class TascalPlugin extends Plugin {
 	    },
 		    (task) => {
 			void (async () => {
-			let updatedStore = removeUnscheduledTask(store, task.id);
+			const updatedStore = removeUnscheduledTask(store, task.id);
 		await saveDayStore(this.app, ctx.dateStr, updatedStore);
 		await this.resetSourceBackedItem(task);
 			await this.reRenderTimeline(ctx.file, ctx.dateStr, updatedStore);

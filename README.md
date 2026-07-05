@@ -258,6 +258,11 @@ Copy `main.js`, `manifest.json`, and `styles.css` into your vault's plugin direc
 
 ## Changelog
 
+### 1.0.5
+
+- Type-checking hygiene: widened the TypeScript `lib` to ES2020 so modern APIs (`Object.entries`, `String.padStart`, `String.trimEnd`, etc.) are properly typed, clearing the community-scan `no-unsafe-*` warnings.
+- Cleaned up remaining lint findings (`prefer-const`, `require-await`, template-expression typing) and added an `npm run lint` script wired to the same type-checked ruleset. No runtime changes.
+
 ### 1.0.4
 
 - Modal polish: consistent modal widths and header spacing, live event/reschedule previews moved below their input fields, and fixed delete-button placement in the unscheduled-task and rescheduled-event lists.

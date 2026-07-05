@@ -167,7 +167,7 @@ async function applyLegacyRecurringEvents(
     const recurringFilePath = ".tascal/recurring.md";
     const dateStr = date.toISODate()!;
 
-    let existingMarkers: Record<string, string[]> = {};
+    const existingMarkers: Record<string, string[]> = {};
     if (await adapter.exists(recurringFilePath)) {
 	try {
 	    const content = await adapter.read(recurringFilePath);
@@ -294,7 +294,7 @@ async function loadRescheduledIntoStore(
 	    continue;
 	}
 
-	let rangeMatch = line.match(RANGE_RE);
+	const rangeMatch = line.match(RANGE_RE);
 	if (rangeMatch) {
 	    const [, reschedDate, fromDate, startRaw, endRaw, summaryRaw] = rangeMatch;
 	    if (reschedDate !== dateStr) {
@@ -325,7 +325,7 @@ async function loadRescheduledIntoStore(
 	    continue;
 	}
 
-	let durMatch = line.match(DUR_RE);
+	const durMatch = line.match(DUR_RE);
 	if (durMatch) {
 	    const [, reschedDate, fromDate, startRaw, durStr, summaryRaw] = durMatch;
 	    if (reschedDate !== dateStr) {

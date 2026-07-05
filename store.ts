@@ -26,8 +26,9 @@ export async function loadDayStore(app: App, dateStr: string): Promise<DayStore>
     try {
 	const text = await adapter.read(path);
 	const data = JSON.parse(text) as DayStore;
-	if (data.version !== 1) {
-	    console.warn(`DayStore ${dateStr}: unknown version ${data.version}, treating as empty`);
+	const version: unknown = (data as { version: unknown }).version;
+	if (version !== 1) {
+	    console.warn(`DayStore ${dateStr}: unknown version ${String(version)}, treating as empty`);
 	    return emptyDayStore();
 	}
 	if (!data.unscheduledTasks) {

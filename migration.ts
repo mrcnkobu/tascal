@@ -69,7 +69,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 	for (const line of text.split("\n")) {
 	    if (line.startsWith("%%processed%%")) continue;
 
-	    let rangeMatch = line.match(RESCHED_RANGE_RE);
+	    const rangeMatch = line.match(RESCHED_RANGE_RE);
 	    if (rangeMatch) {
 			const [, targetDate, fromDate, startStr, endStr, summaryRaw] = rangeMatch;
 		const summary = summaryRaw.replace(/\[[^\]]+\]/, "").replace(/@\d{4}-\d{2}-\d{2}/, "").trim();
@@ -84,7 +84,7 @@ export async function runStoreMigration(app: App, settings: TascalSettings): Pro
 		continue;
 	    }
 
-	    let durMatch = line.match(RESCHED_DUR_RE);
+	    const durMatch = line.match(RESCHED_DUR_RE);
 	    if (durMatch) {
 			const [, targetDate, fromDate, startStr, durStr, summaryRaw] = durMatch;
 		const summary = summaryRaw.replace(/\[[^\]]+\]/, "").replace(/@\d{4}-\d{2}-\d{2}/, "").trim();

@@ -1,11 +1,12 @@
 {
 	"name": "tascal",
-	"version": "1.0.4",
+	"version": "1.0.5",
 	"description": "A calendar-driven daily planner and time tracker.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "node esbuild.config.mjs production",
+		"lint": "eslint .",
 		"deploy": ". ./.env && npm run build && cp main.js manifest.json styles.css \"$OBSIDIAN_VAULT/.obsidian/plugins/tascal/\" && cp main.js manifest.json styles.css \"$OBSIDIAN_VAULT_MAIN/.obsidian/plugins/tascal/\""
 	},
 	"keywords": [
@@ -20,8 +21,10 @@
 		"@types/luxon": "^3.6.2",
 		"@types/node": "^20.11.0",
 		"esbuild": "^0.20.0",
+		"eslint": "^9.39.4",
 		"obsidian": "latest",
-		"typescript": "^5.3.0"
+		"typescript": "^5.3.0",
+		"typescript-eslint": "^8.62.1"
 	},
 	"dependencies": {
 		"ical.js": "^2.1.0",
